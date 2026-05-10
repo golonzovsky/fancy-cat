@@ -229,30 +229,28 @@ pub const Context = struct {
                         .wheel_up => {
                             if (zoom_mod) {
                                 self.document_handler.zoomIn();
+                                self.reload_page = true;
                             } else if (mouse.mods.shift) {
                                 self.document_handler.offsetScroll(step, 0);
                             } else if (self.document_handler.scrollVerticalContinuous(step)) {
                                 self.resetCurrentPage();
                             }
-                            self.reload_page = true;
                         },
                         .wheel_down => {
                             if (zoom_mod) {
                                 self.document_handler.zoomOut();
+                                self.reload_page = true;
                             } else if (mouse.mods.shift) {
                                 self.document_handler.offsetScroll(-step, 0);
                             } else if (self.document_handler.scrollVerticalContinuous(-step)) {
                                 self.resetCurrentPage();
                             }
-                            self.reload_page = true;
                         },
                         .wheel_left => {
                             self.document_handler.offsetScroll(step, 0);
-                            self.reload_page = true;
                         },
                         .wheel_right => {
                             self.document_handler.offsetScroll(-step, 0);
-                            self.reload_page = true;
                         },
                         else => {},
                     }
@@ -288,11 +286,7 @@ pub const Context = struct {
             .colorize = self.config.general.colorize,
             .page = page_number,
             .width_mode = self.document_handler.getWidthMode(),
-
-            // Scale zoom and position as integers with three digits of precision for use in key
             .zoom = @as(u32, @intFromFloat(self.document_handler.getActiveZoom() * 1000.0)),
-            .x_offset = @as(i32, @intFromFloat(self.document_handler.getXOffset() * 1000.0)),
-            .y_offset = @as(i32, @intFromFloat(self.document_handler.getYOffset() * 1000.0)),
         };
 
         if (self.should_check_cache) {
@@ -326,41 +320,69 @@ pub const Context = struct {
     }
 
     pub fn drawCurrentPage(self: *Self, win: vaxis.Window) !void {
-        if (self.reload_page) {
-            const winsize = try vaxis.Tty.getWinsize(self.tty.fd);
-            const pix_per_col = try std.math.divCeil(u16, win.screen.width_pix, win.screen.width);
-            const pix_per_row = try std.math.divCeil(u16, win.screen.height_pix, win.screen.height);
-            const x_pix = winsize.cols * pix_per_col;
-            var y_pix = winsize.rows * pix_per_row;
-            if (self.config.status_bar.enabled) {
-                y_pix -|= 2 * pix_per_row;
-            } else {
-                y_pix -|= 1 * pix_per_row;
-            }
+        const pix_per_col = try std.math.divCeil(u16, win.screen.width_pix, win.screen.width);
+        const pix_per_row = try std.math.divCeil(u16, win.screen.height_pix, win.screen.height);
 
+        var viewport_rows: u16 = win.height;
+        if (self.config.status_bar.enabled) viewport_rows -|= 1;
+        const viewport_w_pix: u32 = @as(u32, win.width) * @as(u32, pix_per_col);
+        const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
+
+        if (self.reload_page) {
             self.current_page = try self.getPage(
                 self.document_handler.getCurrentPageNumber(),
-                x_pix,
-                y_pix,
+                viewport_w_pix,
+                viewport_h_pix,
             );
-
             self.reload_page = false;
         }
 
         if (self.current_page) |img| {
-            const dims = try img.cellSize(win);
-            const x_off = (win.width - dims.cols) / 2;
-            var y_off = (win.height - dims.rows) / 2;
-            if (self.config.status_bar.enabled) {
-                y_off -|= 1; // room for status bar
+            const rendered = self.document_handler.getRenderedSize();
+            self.document_handler.clampScroll(viewport_w_pix, viewport_h_pix);
+            const scroll_x = self.document_handler.getScrollX();
+            const scroll_y = self.document_handler.getScrollY();
+
+            const need_clip_x = rendered.w > viewport_w_pix;
+            const need_clip_y = rendered.h > viewport_h_pix;
+
+            if (need_clip_x or need_clip_y) {
+                const clip_w: u32 = if (need_clip_x) viewport_w_pix else rendered.w;
+                const clip_h: u32 = if (need_clip_y) viewport_h_pix else rendered.h;
+                const clip_x: u32 = if (need_clip_x) @intCast(@max(0, scroll_x)) else 0;
+                const clip_y: u32 = if (need_clip_y) @intCast(@max(0, scroll_y)) else 0;
+
+                const dest_cols: u16 = @intCast(@max(1, clip_w / pix_per_col));
+                const dest_rows: u16 = @intCast(@max(1, clip_h / pix_per_row));
+                const x_off: u16 = if (win.width > dest_cols) (win.width - dest_cols) / 2 else 0;
+                const y_off: u16 = if (viewport_rows > dest_rows) (viewport_rows - dest_rows) / 2 else 0;
+
+                const center = win.child(.{
+                    .x_off = x_off,
+                    .y_off = y_off,
+                    .width = dest_cols,
+                    .height = dest_rows,
+                });
+                try img.draw(center, .{
+                    .clip_region = .{
+                        .x = @intCast(clip_x),
+                        .y = @intCast(clip_y),
+                        .width = @intCast(clip_w),
+                        .height = @intCast(clip_h),
+                    },
+                });
+            } else {
+                const dims = try img.cellSize(win);
+                const x_off = (win.width - @min(win.width, dims.cols)) / 2;
+                const y_off = (viewport_rows - @min(viewport_rows, dims.rows)) / 2;
+                const center = win.child(.{
+                    .x_off = x_off,
+                    .y_off = y_off,
+                    .width = dims.cols,
+                    .height = dims.rows,
+                });
+                try img.draw(center, .{ .scale = .contain });
             }
-            const center = win.child(.{
-                .x_off = x_off,
-                .y_off = y_off,
-                .width = dims.cols,
-                .height = dims.rows,
-            });
-            try img.draw(center, .{ .scale = .contain });
         }
     }
 

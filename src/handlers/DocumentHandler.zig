@@ -92,6 +92,10 @@ pub fn offsetScroll(self: *Self, dx: f32, dy: f32) void {
     self.pdf_handler.offsetScroll(dx, dy);
 }
 
+pub fn clampScroll(self: *Self, viewport_w: u32, viewport_h: u32) void {
+    self.pdf_handler.clampScroll(viewport_w, viewport_h);
+}
+
 pub fn scrollVerticalContinuous(self: *Self, dy: f32) bool {
     switch (self.pdf_handler.tryScrollY(dy)) {
         .scrolled => return false,
@@ -163,10 +167,14 @@ pub fn getActiveZoom(self: *Self) f32 {
     return self.pdf_handler.active_zoom;
 }
 
-pub fn getXOffset(self: *Self) f32 {
-    return self.pdf_handler.x_offset;
+pub fn getScrollX(self: *Self) i32 {
+    return self.pdf_handler.pix_scroll_x;
 }
 
-pub fn getYOffset(self: *Self) f32 {
-    return self.pdf_handler.y_offset;
+pub fn getScrollY(self: *Self) i32 {
+    return self.pdf_handler.pix_scroll_y;
+}
+
+pub fn getRenderedSize(self: *Self) struct { w: u32, h: u32 } {
+    return .{ .w = self.pdf_handler.rendered_w, .h = self.pdf_handler.rendered_h };
 }

@@ -20,10 +20,13 @@ path: []const u8,
 active_zoom: f32,
 default_zoom: f32,
 width_mode: bool,
-y_offset: f32,
-x_offset: f32,
-y_center: f32,
-x_center: f32,
+pix_scroll_x: i32,
+pix_scroll_y: i32,
+rendered_w: u32,
+rendered_h: u32,
+last_viewport_w: u32,
+last_viewport_h: u32,
+pending_snap: ?enum { top, bottom },
 config: *Config,
 
 pub fn init(
@@ -59,10 +62,13 @@ pub fn init(
         .active_zoom = 0,
         .default_zoom = 0,
         .width_mode = false,
-        .y_offset = 0,
-        .x_offset = 0,
-        .y_center = 0,
-        .x_center = 0,
+        .pix_scroll_x = 0,
+        .pix_scroll_y = 0,
+        .rendered_w = 0,
+        .rendered_h = 0,
+        .last_viewport_w = 0,
+        .last_viewport_h = 0,
+        .pending_snap = null,
         .config = config,
     };
 }
@@ -128,20 +134,6 @@ fn calculateZoomLevel(self: *Self, window_width: u32, window_height: u32, bound:
     self.active_zoom = @max(self.active_zoom, self.config.general.zoom_min);
 }
 
-fn calculateXY(self: *Self, view_width: f32, view_height: f32, bound: c.fz_rect) void {
-    // translation to center view
-    self.x_center = (bound.x1 - view_width / self.active_zoom) / 2;
-    self.y_center = (bound.y1 - view_height / self.active_zoom) / 2;
-
-    if (self.x_offset == 0 and self.y_offset == 0 and self.width_mode) {
-        self.y_offset = self.y_center;
-    }
-
-    // don't scroll off page
-    self.x_offset = c.fz_clamp(self.x_offset, -self.x_center, self.x_center);
-    self.y_offset = c.fz_clamp(self.y_offset, -self.y_center, self.y_center);
-}
-
 pub fn renderPage(
     self: *Self,
     page_number: u16,
@@ -168,30 +160,15 @@ pub fn renderPage(
 
         self.calculateZoomLevel(window_width, window_height, bound);
 
-        // document view
-        const view_width = @max(1, @min(
-            self.active_zoom * bound.x1,
-            @as(f32, @floatFromInt(window_width)),
-        ));
-        const view_height = @max(1, @min(
-            self.active_zoom * bound.y1,
-            @as(f32, @floatFromInt(window_height)),
-        ));
+        const full_w = @max(1.0, self.active_zoom * bound.x1);
+        const full_h = @max(1.0, self.active_zoom * bound.y1);
 
-        self.calculateXY(view_width, view_height, bound);
-
-        const bbox = c.fz_make_irect(
-            0,
-            0,
-            @intFromFloat(view_width),
-            @intFromFloat(view_height),
-        );
+        const bbox = c.fz_make_irect(0, 0, @intFromFloat(full_w), @intFromFloat(full_h));
         const pix = c.fz_new_pixmap_with_bbox(self.ctx, c.fz_device_rgb(self.ctx), bbox, null, 0);
         defer c.fz_drop_pixmap(self.ctx, pix);
         c.fz_clear_pixmap_with_value(self.ctx, pix, 0xFF);
 
-        var ctm = c.fz_scale(self.active_zoom, self.active_zoom);
-        ctm = c.fz_pre_translate(ctm, self.x_offset - self.x_center, self.y_offset - self.y_center);
+        const ctm = c.fz_scale(self.active_zoom, self.active_zoom);
 
         const dev = c.fz_new_draw_device(self.ctx, ctm, pix);
         defer c.fz_drop_device(self.ctx, dev);
@@ -212,6 +189,13 @@ pub fn renderPage(
         const b64_buf = try self.allocator.alloc(u8, base64Encoder.calcSize(sample_count));
         const encoded = base64Encoder.encode(b64_buf, samples[0..sample_count]);
 
+        self.rendered_w = @intCast(width);
+        self.rendered_h = @intCast(height);
+        self.last_viewport_w = window_width;
+        self.last_viewport_h = window_height;
+        self.applyPendingSnap();
+        self.clampScroll(window_width, window_height);
+
         return types.EncodedImage{
             .base64 = encoded,
             .width = @as(u16, @intCast(width)),
@@ -220,12 +204,54 @@ pub fn renderPage(
     }
 }
 
+fn maxScrollX(self: *const Self, viewport_w: u32) i32 {
+    if (self.rendered_w > viewport_w) return @intCast(self.rendered_w - viewport_w);
+    return 0;
+}
+
+fn maxScrollY(self: *const Self, viewport_h: u32) i32 {
+    if (self.rendered_h > viewport_h) return @intCast(self.rendered_h - viewport_h);
+    return 0;
+}
+
+pub fn clampScroll(self: *Self, viewport_w: u32, viewport_h: u32) void {
+    self.pix_scroll_x = @max(0, @min(self.maxScrollX(viewport_w), self.pix_scroll_x));
+    self.pix_scroll_y = @max(0, @min(self.maxScrollY(viewport_h), self.pix_scroll_y));
+}
+
+fn applyPendingSnap(self: *Self) void {
+    if (self.pending_snap) |snap| {
+        switch (snap) {
+            .top => {
+                self.pix_scroll_y = 0;
+                self.pix_scroll_x = 0;
+            },
+            .bottom => {
+                self.pix_scroll_y = self.maxScrollY(self.last_viewport_h);
+                self.pix_scroll_x = 0;
+            },
+        }
+        self.pending_snap = null;
+    }
+}
+
 pub fn zoomIn(self: *Self) void {
+    const old_zoom = self.active_zoom;
     self.active_zoom *= self.config.general.zoom_step;
+    self.rescaleScroll(old_zoom);
 }
 
 pub fn zoomOut(self: *Self) void {
+    const old_zoom = self.active_zoom;
     self.active_zoom /= self.config.general.zoom_step;
+    self.rescaleScroll(old_zoom);
+}
+
+fn rescaleScroll(self: *Self, old_zoom: f32) void {
+    if (old_zoom == 0 or self.active_zoom == 0) return;
+    const ratio = self.active_zoom / old_zoom;
+    self.pix_scroll_x = @intFromFloat(@as(f32, @floatFromInt(self.pix_scroll_x)) * ratio);
+    self.pix_scroll_y = @intFromFloat(@as(f32, @floatFromInt(self.pix_scroll_y)) * ratio);
 }
 
 pub fn setZoom(self: *Self, percent: f32) void {
@@ -240,68 +266,47 @@ pub fn toggleColor(self: *Self) void {
 }
 
 pub fn scroll(self: *Self, direction: types.ScrollDirection) void {
-    const step = self.config.general.scroll_step / self.active_zoom;
+    const step: i32 = @intFromFloat(self.config.general.scroll_step);
     switch (direction) {
-        .Up => {
-            const translation = self.y_offset + step;
-            if (self.y_offset < translation) {
-                self.y_offset = translation;
-            } else {
-                self.y_offset = std.math.nextAfter(f32, self.y_offset, std.math.inf(f32));
-            }
-        },
-        .Down => {
-            const translation = self.y_offset - step;
-            if (self.y_offset > translation) {
-                self.y_offset = translation;
-            } else {
-                self.y_offset = std.math.nextAfter(f32, self.y_offset, -std.math.inf(f32));
-            }
-        },
-        .Left => {
-            const translation = self.x_offset + step;
-            if (self.x_offset < translation) {
-                self.x_offset = translation;
-            } else {
-                self.x_offset = std.math.nextAfter(f32, self.x_offset, std.math.inf(f32));
-            }
-        },
-        .Right => {
-            const translation = self.x_offset - step;
-            if (self.x_offset > translation) {
-                self.x_offset = translation;
-            } else {
-                self.x_offset = std.math.nextAfter(f32, self.x_offset, -std.math.inf(f32));
-            }
-        },
+        .Up => self.pix_scroll_y -= step,
+        .Down => self.pix_scroll_y += step,
+        .Left => self.pix_scroll_x -= step,
+        .Right => self.pix_scroll_x += step,
     }
+    self.clampScroll(self.last_viewport_w, self.last_viewport_h);
 }
 
 pub fn offsetScroll(self: *Self, dx: f32, dy: f32) void {
-    self.x_offset -= dx;
-    self.y_offset += dy;
+    // dx > 0 reveals right (scrolls viewport right). dy > 0 reveals top (scrolls viewport up).
+    self.pix_scroll_x += @intFromFloat(dx);
+    self.pix_scroll_y -= @intFromFloat(dy);
+    self.clampScroll(self.last_viewport_w, self.last_viewport_h);
 }
 
 pub const VerticalScrollResult = enum { scrolled, hit_top, hit_bottom };
 
 pub fn tryScrollY(self: *Self, dy: f32) VerticalScrollResult {
-    if (self.active_zoom == 0) {
-        self.y_offset += dy;
+    // dy > 0: viewport moves up (reveals top); dy < 0: viewport moves down (reveals bottom).
+    if (self.rendered_h == 0) {
+        self.pix_scroll_y -= @intFromFloat(dy);
         return .scrolled;
     }
-    const eps: f32 = 1e-3;
-    if (dy < 0 and self.y_offset <= -self.y_center + eps) return .hit_bottom;
-    if (dy > 0 and self.y_offset >= self.y_center - eps) return .hit_top;
-    self.y_offset += dy;
+    const max_y = self.maxScrollY(self.last_viewport_h);
+    if (dy < 0 and self.pix_scroll_y >= max_y) return .hit_bottom;
+    if (dy > 0 and self.pix_scroll_y <= 0) return .hit_top;
+    self.pix_scroll_y -= @intFromFloat(dy);
+    self.pix_scroll_y = @max(0, @min(max_y, self.pix_scroll_y));
     return .scrolled;
 }
 
 pub fn snapToTop(self: *Self) void {
-    self.y_offset = std.math.floatMax(f32);
+    self.pending_snap = .top;
+    self.pix_scroll_y = 0;
+    self.pix_scroll_x = 0;
 }
 
 pub fn snapToBottom(self: *Self) void {
-    self.y_offset = -std.math.floatMax(f32);
+    self.pending_snap = .bottom;
 }
 
 pub fn resetDefaultZoom(self: *Self) void {
@@ -310,14 +315,16 @@ pub fn resetDefaultZoom(self: *Self) void {
 
 pub fn resetZoomAndScroll(self: *Self) void {
     self.active_zoom = self.default_zoom;
-    self.y_offset = 0;
-    self.x_offset = 0;
+    self.pix_scroll_x = 0;
+    self.pix_scroll_y = 0;
 }
 
 pub fn toggleWidthMode(self: *Self) void {
     self.default_zoom = 0;
     self.active_zoom = 0;
     self.width_mode = !self.width_mode;
+    self.pix_scroll_x = 0;
+    self.pix_scroll_y = 0;
 }
 
 pub fn getWidthMode(self: *Self) bool {

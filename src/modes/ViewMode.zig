@@ -95,7 +95,6 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
                     if (s.document_handler.scrollVerticalContinuous(step)) {
                         s.resetCurrentPage();
                     }
-                    s.reload_page = true;
                 }
             }.action,
         },
@@ -108,7 +107,6 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
                     if (s.document_handler.scrollVerticalContinuous(-step)) {
                         s.resetCurrentPage();
                     }
-                    s.reload_page = true;
                 }
             }.action,
         },
@@ -118,7 +116,6 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             .handler = struct {
                 fn action(s: *Context) void {
                     s.document_handler.scroll(.Left);
-                    s.reload_page = true;
                 }
             }.action,
         },
@@ -128,7 +125,6 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             .handler = struct {
                 fn action(s: *Context) void {
                     s.document_handler.scroll(.Right);
-                    s.reload_page = true;
                 }
             }.action,
         },
