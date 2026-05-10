@@ -222,14 +222,8 @@ pub fn clampScroll(self: *Self, viewport_w: u32, viewport_h: u32) void {
 fn applyPendingSnap(self: *Self) void {
     if (self.pending_snap) |snap| {
         switch (snap) {
-            .top => {
-                self.pix_scroll_y = 0;
-                self.pix_scroll_x = 0;
-            },
-            .bottom => {
-                self.pix_scroll_y = self.maxScrollY(self.last_viewport_h);
-                self.pix_scroll_x = 0;
-            },
+            .top => self.pix_scroll_y = 0,
+            .bottom => self.pix_scroll_y = self.maxScrollY(self.last_viewport_h),
         }
         self.pending_snap = null;
     }
@@ -302,7 +296,6 @@ pub fn tryScrollY(self: *Self, dy: f32) VerticalScrollResult {
 pub fn snapToTop(self: *Self) void {
     self.pending_snap = .top;
     self.pix_scroll_y = 0;
-    self.pix_scroll_x = 0;
 }
 
 pub fn snapToBottom(self: *Self) void {
