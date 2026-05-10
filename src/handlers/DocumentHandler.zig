@@ -104,6 +104,10 @@ pub fn setScrollY(self: *Self, y: i32) void {
     self.pdf_handler.pix_scroll_y = y;
 }
 
+pub fn setScrollX(self: *Self, x: i32) void {
+    self.pdf_handler.pix_scroll_x = x;
+}
+
 pub fn setCurrentPage(self: *Self, page: u16) void {
     self.current_page_number = page;
 }

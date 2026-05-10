@@ -141,6 +141,24 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
                 }
             }.action,
         },
+        .{
+            .codepoint = km.jump_back.codepoint,
+            .mods = km.jump_back.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.jumpBack();
+                }
+            }.action,
+        },
+        .{
+            .codepoint = km.jump_forward.codepoint,
+            .mods = km.jump_forward.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.jumpForward();
+                }
+            }.action,
+        },
     };
 
     for (key_actions) |action| {

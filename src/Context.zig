@@ -33,6 +33,14 @@ pub const VisiblePage = struct {
     clip_y: u32,
 };
 
+pub const JumpPosition = struct {
+    page: u16,
+    scroll_y: i32,
+    scroll_x: i32,
+};
+
+const max_jumps: usize = 100;
+
 pub const Context = struct {
     const Self = @This();
 
@@ -60,6 +68,8 @@ pub const Context = struct {
     visible_pages_len: usize,
     last_pix_per_col: u16,
     last_pix_per_row: u16,
+    jump_back: std.ArrayList(JumpPosition),
+    jump_forward: std.ArrayList(JumpPosition),
 
     pub fn init(allocator: std.mem.Allocator, args: [][:0]u8) !Self {
         const path = args[1];
@@ -113,10 +123,14 @@ pub const Context = struct {
             .visible_pages_len = 0,
             .last_pix_per_col = 1,
             .last_pix_per_row = 1,
+            .jump_back = .{},
+            .jump_forward = .{},
         };
     }
 
     pub fn deinit(self: *Self) void {
+        self.jump_back.deinit(self.allocator);
+        self.jump_forward.deinit(self.allocator);
         switch (self.current_mode) {
             .command => |*state| state.deinit(),
             .view => {},
@@ -461,6 +475,7 @@ pub const Context = struct {
     fn followLink(self: *Self, target: @import("./handlers/PdfHandler.zig").LinkTarget) !void {
         switch (target) {
             .page => |page| {
+                self.pushJump();
                 _ = self.document_handler.goToPage(page + 1);
                 self.document_handler.setScrollY(0);
                 self.resetCurrentPage();
@@ -474,6 +489,45 @@ pub const Context = struct {
                 _ = child.spawn() catch {};
             },
         }
+    }
+
+    fn currentPosition(self: *Self) JumpPosition {
+        return .{
+            .page = self.document_handler.getCurrentPageNumber(),
+            .scroll_y = self.document_handler.getScrollY(),
+            .scroll_x = self.document_handler.getScrollX(),
+        };
+    }
+
+    pub fn pushJump(self: *Self) void {
+        const pos = self.currentPosition();
+        self.jump_back.append(self.allocator, pos) catch return;
+        if (self.jump_back.items.len > max_jumps) _ = self.jump_back.orderedRemove(0);
+        for (self.jump_forward.items) |_| {}
+        self.jump_forward.clearRetainingCapacity();
+    }
+
+    pub fn jumpBack(self: *Self) void {
+        if (self.jump_back.items.len == 0) return;
+        const target = self.jump_back.pop() orelse return;
+        const here = self.currentPosition();
+        self.jump_forward.append(self.allocator, here) catch {};
+        self.restorePosition(target);
+    }
+
+    pub fn jumpForward(self: *Self) void {
+        if (self.jump_forward.items.len == 0) return;
+        const target = self.jump_forward.pop() orelse return;
+        const here = self.currentPosition();
+        self.jump_back.append(self.allocator, here) catch {};
+        self.restorePosition(target);
+    }
+
+    fn restorePosition(self: *Self, pos: JumpPosition) void {
+        self.document_handler.setCurrentPage(pos.page);
+        self.document_handler.setScrollY(pos.scroll_y);
+        self.document_handler.setScrollX(pos.scroll_x);
+        self.resetCurrentPage();
     }
 
     pub fn drawStatusBar(self: *Self, win: vaxis.Window) !void {

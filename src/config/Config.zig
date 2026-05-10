@@ -20,6 +20,8 @@ pub const KeyMap = struct {
     execute_command: vaxis.Key = .{ .codepoint = vaxis.Key.enter },
     history_back: vaxis.Key = .{ .codepoint = vaxis.Key.up },
     history_forward: vaxis.Key = .{ .codepoint = vaxis.Key.down },
+    jump_back: vaxis.Key = .{ .codepoint = 'o', .mods = .{ .ctrl = true } },
+    jump_forward: vaxis.Key = .{ .codepoint = vaxis.Key.tab },
 
     pub fn parse(val: std.json.Value, allocator: std.mem.Allocator) KeyMap {
         var keymap = KeyMap{};
