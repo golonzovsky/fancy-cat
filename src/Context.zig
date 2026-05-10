@@ -355,7 +355,7 @@ pub const Context = struct {
         self.visible_pages_len = 0;
 
         var viewport_rows: u16 = win.height;
-        if (self.config.status_bar.enabled) viewport_rows -|= 1;
+        if (self.config.status_bar.enabled or self.current_mode == .command) viewport_rows -|= 1;
         const viewport_w_pix: u32 = @as(u32, win.width) * @as(u32, pix_per_col);
         const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
 
@@ -503,7 +503,6 @@ pub const Context = struct {
         const pos = self.currentPosition();
         self.jump_back.append(self.allocator, pos) catch return;
         if (self.jump_back.items.len > max_jumps) _ = self.jump_back.orderedRemove(0);
-        for (self.jump_forward.items) |_| {}
         self.jump_forward.clearRetainingCapacity();
     }
 
@@ -536,7 +535,7 @@ pub const Context = struct {
 
         const status_bar = win.child(.{
             .x_off = 0,
-            .y_off = win.height -| 2,
+            .y_off = win.height -| 1,
             .width = win.width,
             .height = 1,
         });
@@ -676,12 +675,10 @@ pub const Context = struct {
 
         try self.drawCurrentPage(win);
 
-        if (self.config.status_bar.enabled) {
-            try self.drawStatusBar(win);
-        }
-
         if (self.current_mode == .command) {
             self.current_mode.command.drawCommandBar(win);
+        } else if (self.config.status_bar.enabled) {
+            try self.drawStatusBar(win);
         }
     }
 

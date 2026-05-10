@@ -81,7 +81,6 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
                 fn action(s: *Context) void {
                     s.toggleFullScreen();
                     s.document_handler.resetDefaultZoom();
-                    s.document_handler.resetZoomAndScroll();
                     s.reload_page = true;
                 }
             }.action,
