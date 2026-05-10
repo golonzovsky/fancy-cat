@@ -284,6 +284,44 @@ pub fn toggleWidthMode(self: *Self) void {
     self.pix_scroll_y = 0;
 }
 
+pub const LinkTarget = union(enum) {
+    page: u16,
+    uri: []u8, // owned; caller frees with allocator passed to findLinkAtPoint
+};
+
+pub fn findLinkAtPoint(
+    self: *Self,
+    allocator: std.mem.Allocator,
+    page_number: u16,
+    pdf_x: f32,
+    pdf_y: f32,
+) ?LinkTarget {
+    const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number))) orelse return null;
+    defer c.fz_drop_page(self.ctx, page);
+
+    const links = c.fz_load_links_z(self.ctx, page) orelse return null;
+    defer c.fz_drop_link(self.ctx, links);
+
+    var node: ?*c.fz_link = links;
+    while (node) |link| : (node = link.next) {
+        const r = link.rect;
+        if (pdf_x < r.x0 or pdf_x > r.x1 or pdf_y < r.y0 or pdf_y > r.y1) continue;
+        if (link.uri == null) continue;
+        const uri_zlen = std.mem.len(link.uri);
+        const uri_slice = link.uri[0..uri_zlen];
+
+        if (c.fz_is_external_link(self.ctx, link.uri) != 0) {
+            const owned = allocator.dupe(u8, uri_slice) catch return null;
+            return .{ .uri = owned };
+        }
+        const resolved = c.fz_resolve_link_page_z(self.ctx, self.doc, link.uri);
+        if (resolved < 0) continue;
+        if (resolved >= self.total_pages) continue;
+        return .{ .page = @as(u16, @intCast(resolved)) };
+    }
+    return null;
+}
+
 pub fn getWidthMode(self: *Self) bool {
     return self.width_mode;
 }

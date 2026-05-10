@@ -108,6 +108,16 @@ pub fn setCurrentPage(self: *Self, page: u16) void {
     self.current_page_number = page;
 }
 
+pub fn findLinkAtPoint(
+    self: *Self,
+    allocator: std.mem.Allocator,
+    page_number: u16,
+    pdf_x: f32,
+    pdf_y: f32,
+) ?PdfHandler.LinkTarget {
+    return self.pdf_handler.findLinkAtPoint(allocator, page_number, pdf_x, pdf_y);
+}
+
 pub fn resetDefaultZoom(self: *Self) void {
     self.pdf_handler.resetDefaultZoom();
 }

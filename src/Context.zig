@@ -23,6 +23,16 @@ pub const ModeType = enum { view, command };
 pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode };
 pub const ReloadIndicatorState = enum { idle, reload, watching };
 
+pub const VisiblePage = struct {
+    page_num: u16,
+    vp_y_top: u32,
+    vp_y_bot: u32,
+    vp_x_left: u32,
+    vp_x_right: u32,
+    clip_x: u32,
+    clip_y: u32,
+};
+
 pub const Context = struct {
     const Self = @This();
 
@@ -46,6 +56,10 @@ pub const Context = struct {
     current_reload_indicator_state: ReloadIndicatorState,
     reload_indicator_active: bool,
     buf: []u8,
+    visible_pages: [8]VisiblePage,
+    visible_pages_len: usize,
+    last_pix_per_col: u16,
+    last_pix_per_row: u16,
 
     pub fn init(allocator: std.mem.Allocator, args: [][:0]u8) !Self {
         const path = args[1];
@@ -95,6 +109,10 @@ pub const Context = struct {
             .current_reload_indicator_state = .idle,
             .reload_indicator_active = false,
             .buf = buf,
+            .visible_pages = undefined,
+            .visible_pages_len = 0,
+            .last_pix_per_col = 1,
+            .last_pix_per_row = 1,
         };
     }
 
@@ -249,6 +267,9 @@ pub const Context = struct {
                         .wheel_right => {
                             self.document_handler.offsetScroll(-step, 0);
                         },
+                        .left => {
+                            try self.handleLeftClick(mouse);
+                        },
                         else => {},
                     }
                 }
@@ -315,6 +336,9 @@ pub const Context = struct {
     pub fn drawCurrentPage(self: *Self, win: vaxis.Window) !void {
         const pix_per_col = try std.math.divCeil(u16, win.screen.width_pix, win.screen.width);
         const pix_per_row = try std.math.divCeil(u16, win.screen.height_pix, win.screen.height);
+        self.last_pix_per_col = pix_per_col;
+        self.last_pix_per_row = pix_per_row;
+        self.visible_pages_len = 0;
 
         var viewport_rows: u16 = win.height;
         if (self.config.status_bar.enabled) viewport_rows -|= 1;
@@ -393,9 +417,62 @@ pub const Context = struct {
                 },
             });
 
+            if (self.visible_pages_len < self.visible_pages.len) {
+                const vp_x_left: u32 = @as(u32, x_off) * @as(u32, pix_per_col);
+                self.visible_pages[self.visible_pages_len] = .{
+                    .page_num = draw_page,
+                    .vp_y_top = y_pix_used,
+                    .vp_y_bot = y_pix_used + visible_h,
+                    .vp_x_left = vp_x_left,
+                    .vp_x_right = vp_x_left + clip_w,
+                    .clip_x = clip_x,
+                    .clip_y = clip_top,
+                };
+                self.visible_pages_len += 1;
+            }
+
             y_pix_used += visible_h;
             first_top = 0;
             draw_page += 1;
+        }
+    }
+
+    pub fn handleLeftClick(self: *Self, mouse: vaxis.Mouse) !void {
+        const click_pix_x: u32 = @as(u32, mouse.col) * @as(u32, self.last_pix_per_col) + mouse.xoffset;
+        const click_pix_y: u32 = @as(u32, mouse.row) * @as(u32, self.last_pix_per_row) + mouse.yoffset;
+        const zoom = self.document_handler.getActiveZoom();
+        if (zoom == 0) return;
+
+        for (self.visible_pages[0..self.visible_pages_len]) |p| {
+            if (click_pix_y < p.vp_y_top or click_pix_y >= p.vp_y_bot) continue;
+            if (click_pix_x < p.vp_x_left or click_pix_x >= p.vp_x_right) continue;
+
+            const bitmap_x: f32 = @floatFromInt(p.clip_x + (click_pix_x - p.vp_x_left));
+            const bitmap_y: f32 = @floatFromInt(p.clip_y + (click_pix_y - p.vp_y_top));
+            const pdf_x = bitmap_x / zoom;
+            const pdf_y = bitmap_y / zoom;
+
+            const target = self.document_handler.findLinkAtPoint(self.allocator, p.page_num, pdf_x, pdf_y) orelse return;
+            try self.followLink(target);
+            return;
+        }
+    }
+
+    fn followLink(self: *Self, target: @import("./handlers/PdfHandler.zig").LinkTarget) !void {
+        switch (target) {
+            .page => |page| {
+                _ = self.document_handler.goToPage(page + 1);
+                self.document_handler.setScrollY(0);
+                self.resetCurrentPage();
+            },
+            .uri => |uri| {
+                defer self.allocator.free(uri);
+                var child = std.process.Child.init(&.{ "open", uri }, self.allocator);
+                child.stdin_behavior = .Ignore;
+                child.stdout_behavior = .Ignore;
+                child.stderr_behavior = .Ignore;
+                _ = child.spawn() catch {};
+            },
         }
     }
 

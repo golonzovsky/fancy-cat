@@ -20,3 +20,20 @@ fz_page *fz_load_page_z(fz_context *ctx, fz_document *doc, int page_number) {
   fz_catch(ctx) {}
   return page;
 }
+
+fz_link *fz_load_links_z(fz_context *ctx, fz_page *page) {
+  fz_link *links = NULL;
+  fz_try(ctx) { links = fz_load_links(ctx, page); }
+  fz_catch(ctx) {}
+  return links;
+}
+
+int fz_resolve_link_page_z(fz_context *ctx, fz_document *doc, const char *uri) {
+  int page = -1;
+  fz_try(ctx) {
+    fz_location loc = fz_resolve_link(ctx, doc, uri, NULL, NULL);
+    page = fz_page_number_from_location(ctx, doc, loc);
+  }
+  fz_catch(ctx) {}
+  return page;
+}
