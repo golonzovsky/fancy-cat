@@ -8,6 +8,7 @@ const DocumentHandler = @import("handlers/DocumentHandler.zig");
 const Cache = @import("./Cache.zig");
 const ReloadIndicatorTimer = @import("services/ReloadIndicatorTimer.zig");
 const History = @import("services/History.zig");
+const Positions = @import("services/Positions.zig");
 
 pub const panic = vaxis.panic_handler;
 
@@ -58,6 +59,8 @@ pub const Context = struct {
     config: *Config,
     current_mode: Mode,
     history: History,
+    positions: Positions,
+    doc_path: []const u8,
     reload_page: bool,
     cache: Cache,
     reload_indicator_timer: ReloadIndicatorTimer,
@@ -86,6 +89,19 @@ pub const Context = struct {
         var document_handler = try DocumentHandler.init(allocator, path, initial_page, config);
         errdefer document_handler.deinit();
 
+        var positions = Positions.init(allocator, config, path);
+        errdefer positions.deinit();
+        if (initial_page == null) {
+            if (positions.getSavedPosition()) |pos| {
+                if (pos.page < document_handler.getTotalPages()) {
+                    document_handler.setCurrentPage(pos.page);
+                    document_handler.setScrollX(pos.scroll_x);
+                    document_handler.setScrollY(pos.scroll_y);
+                    if (pos.zoom > 0) document_handler.setActiveZoom(pos.zoom);
+                }
+            }
+        }
+
         var watcher: ?fzwatch.Watcher = null;
         if (config.file_monitor.enabled) {
             watcher = try fzwatch.Watcher.init(allocator);
@@ -113,6 +129,8 @@ pub const Context = struct {
             .config = config,
             .current_mode = undefined,
             .history = history,
+            .positions = positions,
+            .doc_path = path,
             .reload_page = true,
             .cache = Cache.init(allocator, config, vx, &tty),
             .reload_indicator_timer = reload_indicator_timer,
@@ -129,6 +147,13 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.positions.save(.{
+            .page = self.document_handler.getCurrentPageNumber(),
+            .scroll_x = self.document_handler.getScrollX(),
+            .scroll_y = self.document_handler.getScrollY(),
+            .zoom = self.document_handler.getActiveZoom(),
+        });
+        self.positions.deinit();
         self.jump_back.deinit(self.allocator);
         self.jump_forward.deinit(self.allocator);
         switch (self.current_mode) {
