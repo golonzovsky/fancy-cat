@@ -220,7 +220,44 @@ pub const Context = struct {
     pub fn update(self: *Self, event: Event) !void {
         switch (event) {
             .key_press => |key| try self.handleKeyStroke(key),
-            .mouse => |mouse| self.mouse = mouse,
+            .mouse => |mouse| {
+                self.mouse = mouse;
+                if (self.current_mode == .view and mouse.type == .press) {
+                    const step = self.config.general.scroll_step / 4.0;
+                    const zoom_mod = mouse.mods.ctrl or mouse.mods.alt;
+                    switch (mouse.button) {
+                        .wheel_up => {
+                            if (zoom_mod) {
+                                self.document_handler.zoomIn();
+                            } else if (mouse.mods.shift) {
+                                self.document_handler.offsetScroll(step, 0);
+                            } else if (self.document_handler.scrollVerticalContinuous(step)) {
+                                self.resetCurrentPage();
+                            }
+                            self.reload_page = true;
+                        },
+                        .wheel_down => {
+                            if (zoom_mod) {
+                                self.document_handler.zoomOut();
+                            } else if (mouse.mods.shift) {
+                                self.document_handler.offsetScroll(-step, 0);
+                            } else if (self.document_handler.scrollVerticalContinuous(-step)) {
+                                self.resetCurrentPage();
+                            }
+                            self.reload_page = true;
+                        },
+                        .wheel_left => {
+                            self.document_handler.offsetScroll(step, 0);
+                            self.reload_page = true;
+                        },
+                        .wheel_right => {
+                            self.document_handler.offsetScroll(-step, 0);
+                            self.reload_page = true;
+                        },
+                        else => {},
+                    }
+                }
+            },
             .winsize => |ws| {
                 try self.vx.resize(self.allocator, self.tty.writer(), ws);
                 self.cache.clear();

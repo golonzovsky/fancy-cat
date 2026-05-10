@@ -92,6 +92,25 @@ pub fn offsetScroll(self: *Self, dx: f32, dy: f32) void {
     self.pdf_handler.offsetScroll(dx, dy);
 }
 
+pub fn scrollVerticalContinuous(self: *Self, dy: f32) bool {
+    switch (self.pdf_handler.tryScrollY(dy)) {
+        .scrolled => return false,
+        .hit_bottom => {
+            if (self.changePage(1)) {
+                self.pdf_handler.snapToTop();
+                return true;
+            }
+        },
+        .hit_top => {
+            if (self.changePage(-1)) {
+                self.pdf_handler.snapToBottom();
+                return true;
+            }
+        },
+    }
+    return false;
+}
+
 pub fn resetDefaultZoom(self: *Self) void {
     self.pdf_handler.resetDefaultZoom();
 }

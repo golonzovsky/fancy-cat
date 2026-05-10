@@ -282,6 +282,28 @@ pub fn offsetScroll(self: *Self, dx: f32, dy: f32) void {
     self.y_offset += dy;
 }
 
+pub const VerticalScrollResult = enum { scrolled, hit_top, hit_bottom };
+
+pub fn tryScrollY(self: *Self, dy: f32) VerticalScrollResult {
+    if (self.active_zoom == 0) {
+        self.y_offset += dy;
+        return .scrolled;
+    }
+    const eps: f32 = 1e-3;
+    if (dy < 0 and self.y_offset <= -self.y_center + eps) return .hit_bottom;
+    if (dy > 0 and self.y_offset >= self.y_center - eps) return .hit_top;
+    self.y_offset += dy;
+    return .scrolled;
+}
+
+pub fn snapToTop(self: *Self) void {
+    self.y_offset = std.math.floatMax(f32);
+}
+
+pub fn snapToBottom(self: *Self) void {
+    self.y_offset = -std.math.floatMax(f32);
+}
+
 pub fn resetDefaultZoom(self: *Self) void {
     self.default_zoom = 0;
 }

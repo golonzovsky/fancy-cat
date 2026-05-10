@@ -91,7 +91,10 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             .mods = km.scroll_up.mods,
             .handler = struct {
                 fn action(s: *Context) void {
-                    s.document_handler.scroll(.Up);
+                    const step = s.config.general.scroll_step;
+                    if (s.document_handler.scrollVerticalContinuous(step)) {
+                        s.resetCurrentPage();
+                    }
                     s.reload_page = true;
                 }
             }.action,
@@ -101,7 +104,10 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             .mods = km.scroll_down.mods,
             .handler = struct {
                 fn action(s: *Context) void {
-                    s.document_handler.scroll(.Down);
+                    const step = s.config.general.scroll_step;
+                    if (s.document_handler.scrollVerticalContinuous(-step)) {
+                        s.resetCurrentPage();
+                    }
                     s.reload_page = true;
                 }
             }.action,
