@@ -42,7 +42,6 @@ pub const Context = struct {
     history: History,
     reload_page: bool,
     cache: Cache,
-    should_check_cache: bool,
     reload_indicator_timer: ReloadIndicatorTimer,
     current_reload_indicator_state: ReloadIndicatorState,
     reload_indicator_active: bool,
@@ -92,7 +91,6 @@ pub const Context = struct {
             .history = history,
             .reload_page = true,
             .cache = Cache.init(allocator, config, vx, &tty),
-            .should_check_cache = config.cache.enabled,
             .reload_indicator_timer = reload_indicator_timer,
             .current_reload_indicator_state = .idle,
             .reload_indicator_active = false,
@@ -198,7 +196,6 @@ pub const Context = struct {
     }
 
     pub fn resetCurrentPage(self: *Self) void {
-        self.should_check_cache = self.config.cache.enabled;
         self.reload_page = true;
     }
 
@@ -232,8 +229,8 @@ pub const Context = struct {
                                 self.reload_page = true;
                             } else if (mouse.mods.shift) {
                                 self.document_handler.offsetScroll(step, 0);
-                            } else if (self.document_handler.scrollVerticalContinuous(step)) {
-                                self.resetCurrentPage();
+                            } else {
+                                self.document_handler.scrollY(step);
                             }
                         },
                         .wheel_down => {
@@ -242,8 +239,8 @@ pub const Context = struct {
                                 self.reload_page = true;
                             } else if (mouse.mods.shift) {
                                 self.document_handler.offsetScroll(-step, 0);
-                            } else if (self.document_handler.scrollVerticalContinuous(-step)) {
-                                self.resetCurrentPage();
+                            } else {
+                                self.document_handler.scrollY(-step);
                             }
                         },
                         .wheel_left => {
@@ -289,11 +286,8 @@ pub const Context = struct {
             .zoom = @as(u32, @intFromFloat(self.document_handler.getActiveZoom() * 1000.0)),
         };
 
-        if (self.should_check_cache) {
-            if (self.cache.get(cache_key)) |cached| {
-                self.should_check_cache = false;
-                return cached.image;
-            }
+        if (self.config.cache.enabled) {
+            if (self.cache.get(cache_key)) |cached| return cached.image;
         }
 
         const encoded_image = try self.document_handler.renderPage(
@@ -311,9 +305,8 @@ pub const Context = struct {
             .rgb,
         );
 
-        if (self.should_check_cache) {
+        if (self.config.cache.enabled) {
             _ = try self.cache.put(cache_key, .{ .image = image });
-            self.should_check_cache = false;
         }
 
         return image;
@@ -328,61 +321,81 @@ pub const Context = struct {
         const viewport_w_pix: u32 = @as(u32, win.width) * @as(u32, pix_per_col);
         const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
 
-        if (self.reload_page) {
-            self.current_page = try self.getPage(
-                self.document_handler.getCurrentPageNumber(),
-                viewport_w_pix,
-                viewport_h_pix,
-            );
-            self.reload_page = false;
+        var page_num = self.document_handler.getCurrentPageNumber();
+        const total_pages = self.document_handler.getTotalPages();
+        var cur_img = try self.getPage(page_num, viewport_w_pix, viewport_h_pix);
+        var scroll_y: i32 = self.document_handler.getScrollY();
+
+        while (scroll_y < 0 and page_num > 0) {
+            const prev_img = try self.getPage(page_num - 1, viewport_w_pix, viewport_h_pix);
+            scroll_y += @as(i32, @intCast(prev_img.height));
+            page_num -= 1;
+            cur_img = prev_img;
         }
 
-        if (self.current_page) |img| {
-            const rendered = self.document_handler.getRenderedSize();
-            self.document_handler.clampScroll(viewport_w_pix, viewport_h_pix);
-            const scroll_x = self.document_handler.getScrollX();
-            const scroll_y = self.document_handler.getScrollY();
+        while (page_num + 1 < total_pages and scroll_y >= @as(i32, @intCast(cur_img.height))) {
+            scroll_y -= @as(i32, @intCast(cur_img.height));
+            page_num += 1;
+            cur_img = try self.getPage(page_num, viewport_w_pix, viewport_h_pix);
+        }
 
-            const need_clip_x = rendered.w > viewport_w_pix;
-            const need_clip_y = rendered.h > viewport_h_pix;
+        if (page_num == 0 and scroll_y < 0) scroll_y = 0;
+        if (page_num + 1 == total_pages) {
+            const max_y = @max(0, @as(i32, @intCast(cur_img.height)) - @as(i32, @intCast(viewport_h_pix)));
+            if (scroll_y > max_y) scroll_y = max_y;
+        }
 
-            if (need_clip_x or need_clip_y) {
-                const clip_w: u32 = if (need_clip_x) viewport_w_pix else rendered.w;
-                const clip_h: u32 = if (need_clip_y) viewport_h_pix else rendered.h;
-                const clip_x: u32 = if (need_clip_x) @intCast(@max(0, scroll_x)) else 0;
-                const clip_y: u32 = if (need_clip_y) @intCast(@max(0, scroll_y)) else 0;
+        self.document_handler.setCurrentPage(page_num);
+        self.document_handler.setScrollY(scroll_y);
+        self.document_handler.clampScrollX(viewport_w_pix);
+        self.current_page = cur_img;
+        self.reload_page = false;
 
-                const dest_cols: u16 = @intCast(@max(1, clip_w / pix_per_col));
-                const dest_rows: u16 = @intCast(@max(1, clip_h / pix_per_row));
-                const x_off: u16 = if (win.width > dest_cols) (win.width - dest_cols) / 2 else 0;
-                const y_off: u16 = if (viewport_rows > dest_rows) (viewport_rows - dest_rows) / 2 else 0;
+        const scroll_x = self.document_handler.getScrollX();
+        var y_pix_used: u32 = 0;
+        var draw_page = page_num;
+        var first_top: i32 = scroll_y;
 
-                const center = win.child(.{
-                    .x_off = x_off,
-                    .y_off = y_off,
-                    .width = dest_cols,
-                    .height = dest_rows,
-                });
-                try img.draw(center, .{
-                    .clip_region = .{
-                        .x = @intCast(clip_x),
-                        .y = @intCast(clip_y),
-                        .width = @intCast(clip_w),
-                        .height = @intCast(clip_h),
-                    },
-                });
-            } else {
-                const dims = try img.cellSize(win);
-                const x_off = (win.width - @min(win.width, dims.cols)) / 2;
-                const y_off = (viewport_rows - @min(viewport_rows, dims.rows)) / 2;
-                const center = win.child(.{
-                    .x_off = x_off,
-                    .y_off = y_off,
-                    .width = dims.cols,
-                    .height = dims.rows,
-                });
-                try img.draw(center, .{ .scale = .contain });
+        while (y_pix_used < viewport_h_pix and draw_page < total_pages) {
+            const img = try self.getPage(draw_page, viewport_w_pix, viewport_h_pix);
+            const clip_top: u32 = @intCast(@max(0, first_top));
+            const img_h: u32 = img.height;
+            if (clip_top >= img_h) {
+                draw_page += 1;
+                first_top = 0;
+                continue;
             }
+            const remaining_vp = viewport_h_pix - y_pix_used;
+            const visible_h: u32 = @min(remaining_vp, img_h - clip_top);
+
+            const img_w: u32 = img.width;
+            const need_clip_x = img_w > viewport_w_pix;
+            const clip_w: u32 = if (need_clip_x) viewport_w_pix else img_w;
+            const clip_x: u32 = if (need_clip_x) @intCast(@max(0, scroll_x)) else 0;
+
+            const dest_cols: u16 = @intCast(@max(1, clip_w / pix_per_col));
+            const dest_rows: u16 = @intCast(@max(1, visible_h / pix_per_row));
+            const x_off: u16 = if (win.width > dest_cols) (win.width - dest_cols) / 2 else 0;
+            const y_off: u16 = @intCast(y_pix_used / pix_per_row);
+
+            const child = win.child(.{
+                .x_off = x_off,
+                .y_off = y_off,
+                .width = dest_cols,
+                .height = dest_rows,
+            });
+            try img.draw(child, .{
+                .clip_region = .{
+                    .x = @intCast(clip_x),
+                    .y = @intCast(clip_top),
+                    .width = @intCast(clip_w),
+                    .height = @intCast(visible_h),
+                },
+            });
+
+            y_pix_used += visible_h;
+            first_top = 0;
+            draw_page += 1;
         }
     }
 

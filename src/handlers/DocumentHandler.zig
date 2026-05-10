@@ -92,27 +92,20 @@ pub fn offsetScroll(self: *Self, dx: f32, dy: f32) void {
     self.pdf_handler.offsetScroll(dx, dy);
 }
 
-pub fn clampScroll(self: *Self, viewport_w: u32, viewport_h: u32) void {
-    self.pdf_handler.clampScroll(viewport_w, viewport_h);
+pub fn scrollY(self: *Self, dy: f32) void {
+    self.pdf_handler.pix_scroll_y -= @intFromFloat(dy);
 }
 
-pub fn scrollVerticalContinuous(self: *Self, dy: f32) bool {
-    switch (self.pdf_handler.tryScrollY(dy)) {
-        .scrolled => return false,
-        .hit_bottom => {
-            if (self.changePage(1)) {
-                self.pdf_handler.snapToTop();
-                return true;
-            }
-        },
-        .hit_top => {
-            if (self.changePage(-1)) {
-                self.pdf_handler.snapToBottom();
-                return true;
-            }
-        },
-    }
-    return false;
+pub fn clampScrollX(self: *Self, viewport_w: u32) void {
+    self.pdf_handler.clampScrollX(viewport_w);
+}
+
+pub fn setScrollY(self: *Self, y: i32) void {
+    self.pdf_handler.pix_scroll_y = y;
+}
+
+pub fn setCurrentPage(self: *Self, page: u16) void {
+    self.current_page_number = page;
 }
 
 pub fn resetDefaultZoom(self: *Self) void {
@@ -175,6 +168,3 @@ pub fn getScrollY(self: *Self) i32 {
     return self.pdf_handler.pix_scroll_y;
 }
 
-pub fn getRenderedSize(self: *Self) struct { w: u32, h: u32 } {
-    return .{ .w = self.pdf_handler.rendered_w, .h = self.pdf_handler.rendered_h };
-}

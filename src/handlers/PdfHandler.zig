@@ -26,7 +26,6 @@ rendered_w: u32,
 rendered_h: u32,
 last_viewport_w: u32,
 last_viewport_h: u32,
-pending_snap: ?enum { top, bottom },
 config: *Config,
 
 pub fn init(
@@ -68,7 +67,6 @@ pub fn init(
         .rendered_h = 0,
         .last_viewport_w = 0,
         .last_viewport_h = 0,
-        .pending_snap = null,
         .config = config,
     };
 }
@@ -193,8 +191,6 @@ pub fn renderPage(
         self.rendered_h = @intCast(height);
         self.last_viewport_w = window_width;
         self.last_viewport_h = window_height;
-        self.applyPendingSnap();
-        self.clampScroll(window_width, window_height);
 
         return types.EncodedImage{
             .base64 = encoded,
@@ -214,19 +210,12 @@ fn maxScrollY(self: *const Self, viewport_h: u32) i32 {
     return 0;
 }
 
-pub fn clampScroll(self: *Self, viewport_w: u32, viewport_h: u32) void {
+pub fn clampScrollX(self: *Self, viewport_w: u32) void {
     self.pix_scroll_x = @max(0, @min(self.maxScrollX(viewport_w), self.pix_scroll_x));
-    self.pix_scroll_y = @max(0, @min(self.maxScrollY(viewport_h), self.pix_scroll_y));
 }
 
-fn applyPendingSnap(self: *Self) void {
-    if (self.pending_snap) |snap| {
-        switch (snap) {
-            .top => self.pix_scroll_y = 0,
-            .bottom => self.pix_scroll_y = self.maxScrollY(self.last_viewport_h),
-        }
-        self.pending_snap = null;
-    }
+pub fn currentMaxScrollY(self: *const Self, viewport_h: u32) i32 {
+    return self.maxScrollY(viewport_h);
 }
 
 pub fn zoomIn(self: *Self) void {
@@ -267,39 +256,14 @@ pub fn scroll(self: *Self, direction: types.ScrollDirection) void {
         .Left => self.pix_scroll_x -= step,
         .Right => self.pix_scroll_x += step,
     }
-    self.clampScroll(self.last_viewport_w, self.last_viewport_h);
+    self.clampScrollX(self.last_viewport_w);
 }
 
 pub fn offsetScroll(self: *Self, dx: f32, dy: f32) void {
-    // dx > 0 reveals right (scrolls viewport right). dy > 0 reveals top (scrolls viewport up).
+    // dx > 0 reveals right; dy > 0 reveals top (pix_scroll_y decreases).
     self.pix_scroll_x += @intFromFloat(dx);
     self.pix_scroll_y -= @intFromFloat(dy);
-    self.clampScroll(self.last_viewport_w, self.last_viewport_h);
-}
-
-pub const VerticalScrollResult = enum { scrolled, hit_top, hit_bottom };
-
-pub fn tryScrollY(self: *Self, dy: f32) VerticalScrollResult {
-    // dy > 0: viewport moves up (reveals top); dy < 0: viewport moves down (reveals bottom).
-    if (self.rendered_h == 0) {
-        self.pix_scroll_y -= @intFromFloat(dy);
-        return .scrolled;
-    }
-    const max_y = self.maxScrollY(self.last_viewport_h);
-    if (dy < 0 and self.pix_scroll_y >= max_y) return .hit_bottom;
-    if (dy > 0 and self.pix_scroll_y <= 0) return .hit_top;
-    self.pix_scroll_y -= @intFromFloat(dy);
-    self.pix_scroll_y = @max(0, @min(max_y, self.pix_scroll_y));
-    return .scrolled;
-}
-
-pub fn snapToTop(self: *Self) void {
-    self.pending_snap = .top;
-    self.pix_scroll_y = 0;
-}
-
-pub fn snapToBottom(self: *Self) void {
-    self.pending_snap = .bottom;
+    self.clampScrollX(self.last_viewport_w);
 }
 
 pub fn resetDefaultZoom(self: *Self) void {
