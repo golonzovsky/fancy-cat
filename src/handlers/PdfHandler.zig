@@ -289,6 +289,35 @@ pub const LinkTarget = union(enum) {
     uri: []u8, // owned; caller frees with allocator passed to findLinkAtPoint
 };
 
+pub fn getDocumentKey(self: *Self, allocator: std.mem.Allocator) ![]u8 {
+    var id_buf: [256]u8 = undefined;
+    const id_len = c.fz_pdf_id_hex_z(self.ctx, self.doc, &id_buf, id_buf.len);
+    if (id_len > 0) {
+        return std.fmt.allocPrint(allocator, "pdf-id:{s}", .{id_buf[0..@as(usize, @intCast(id_len))]});
+    }
+
+    if (std.fs.cwd().openFile(self.path, .{})) |file| {
+        defer file.close();
+        const max_bytes: usize = 1024 * 1024;
+        const buf = allocator.alloc(u8, max_bytes) catch return std.fmt.allocPrint(allocator, "path:{s}", .{self.path});
+        defer allocator.free(buf);
+        const read = file.readAll(buf) catch 0;
+        if (read > 0) {
+            var digest: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(buf[0..read], &digest, .{});
+            var hex: [64]u8 = undefined;
+            const hex_chars = "0123456789abcdef";
+            for (digest, 0..) |b, i| {
+                hex[2 * i] = hex_chars[b >> 4];
+                hex[2 * i + 1] = hex_chars[b & 0xF];
+            }
+            return std.fmt.allocPrint(allocator, "sha256-1mb:{s}", .{hex});
+        }
+    } else |_| {}
+
+    return std.fmt.allocPrint(allocator, "path:{s}", .{self.path});
+}
+
 pub fn findLinkAtPoint(
     self: *Self,
     allocator: std.mem.Allocator,

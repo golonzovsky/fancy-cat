@@ -126,6 +126,10 @@ pub fn findLinkAtPoint(
     return self.pdf_handler.findLinkAtPoint(allocator, page_number, pdf_x, pdf_y);
 }
 
+pub fn getDocumentKey(self: *Self, allocator: std.mem.Allocator) ![]u8 {
+    return self.pdf_handler.getDocumentKey(allocator);
+}
+
 pub fn resetDefaultZoom(self: *Self) void {
     self.pdf_handler.resetDefaultZoom();
 }

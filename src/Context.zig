@@ -61,6 +61,7 @@ pub const Context = struct {
     history: History,
     positions: Positions,
     doc_path: []const u8,
+    doc_key: []u8,
     reload_page: bool,
     cache: Cache,
     reload_indicator_timer: ReloadIndicatorTimer,
@@ -89,7 +90,10 @@ pub const Context = struct {
         var document_handler = try DocumentHandler.init(allocator, path, initial_page, config);
         errdefer document_handler.deinit();
 
-        var positions = Positions.init(allocator, config, path);
+        const doc_key = try document_handler.getDocumentKey(allocator);
+        errdefer allocator.free(doc_key);
+
+        var positions = Positions.init(allocator, config, doc_key);
         errdefer positions.deinit();
         if (initial_page == null) {
             if (positions.getSavedPosition()) |pos| {
@@ -131,6 +135,7 @@ pub const Context = struct {
             .history = history,
             .positions = positions,
             .doc_path = path,
+            .doc_key = doc_key,
             .reload_page = true,
             .cache = Cache.init(allocator, config, vx, &tty),
             .reload_indicator_timer = reload_indicator_timer,
@@ -154,6 +159,7 @@ pub const Context = struct {
             .zoom = self.document_handler.getActiveZoom(),
         });
         self.positions.deinit();
+        self.allocator.free(self.doc_key);
         self.jump_back.deinit(self.allocator);
         self.jump_forward.deinit(self.allocator);
         switch (self.current_mode) {

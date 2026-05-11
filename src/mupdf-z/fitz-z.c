@@ -1,4 +1,5 @@
 #include "fitz-z.h"
+#include "mupdf/pdf.h"
 
 fz_document *fz_open_document_z(fz_context *ctx, const char *filename) {
   fz_document *doc = NULL;
@@ -36,4 +37,32 @@ int fz_resolve_link_page_z(fz_context *ctx, fz_document *doc, const char *uri) {
   }
   fz_catch(ctx) {}
   return page;
+}
+
+int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size) {
+  int written = 0;
+  fz_try(ctx) {
+    pdf_document *pdoc = pdf_specifics(ctx, doc);
+    if (!pdoc) fz_throw(ctx, FZ_ERROR_GENERIC, "not a pdf");
+    pdf_obj *trailer = pdf_trailer(ctx, pdoc);
+    if (!trailer) fz_throw(ctx, FZ_ERROR_GENERIC, "no trailer");
+    pdf_obj *id_array = pdf_dict_gets(ctx, trailer, "ID");
+    if (!id_array) fz_throw(ctx, FZ_ERROR_GENERIC, "no /ID");
+    pdf_obj *first = pdf_array_get(ctx, id_array, 0);
+    if (!first) fz_throw(ctx, FZ_ERROR_GENERIC, "no /ID[0]");
+    size_t len = 0;
+    const char *bytes = pdf_to_string(ctx, first, &len);
+    if (!bytes || len == 0) fz_throw(ctx, FZ_ERROR_GENERIC, "empty /ID");
+    int need = (int)(len * 2);
+    if (need + 1 > out_size) fz_throw(ctx, FZ_ERROR_GENERIC, "buf too small");
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < len; i++) {
+      out[2 * i] = hex[(unsigned char)bytes[i] >> 4];
+      out[2 * i + 1] = hex[(unsigned char)bytes[i] & 0xF];
+    }
+    out[need] = 0;
+    written = need;
+  }
+  fz_catch(ctx) { written = 0; }
+  return written;
 }
