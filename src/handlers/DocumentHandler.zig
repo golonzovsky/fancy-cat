@@ -142,6 +142,10 @@ pub fn getDocumentKey(self: *Self, allocator: std.mem.Allocator) ![]u8 {
     return self.pdf_handler.getDocumentKey(allocator);
 }
 
+pub fn loadLinks(self: *Self, allocator: std.mem.Allocator, page_number: u16) ![]PdfHandler.PageLink {
+    return self.pdf_handler.loadLinks(allocator, page_number);
+}
+
 pub fn resetDefaultZoom(self: *Self) void {
     self.pdf_handler.resetDefaultZoom();
 }

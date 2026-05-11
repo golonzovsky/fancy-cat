@@ -13,6 +13,7 @@ pub const KeyMap = struct {
     zoom_out: vaxis.Key = .{ .codepoint = 'o' },
     width_mode: vaxis.Key = .{ .codepoint = 'w' },
     crop_to_content: vaxis.Key = .{ .codepoint = 't' },
+    hint_mode: vaxis.Key = .{ .codepoint = ';' },
     colorize: vaxis.Key = .{ .codepoint = 'z' },
     quit: vaxis.Key = .{ .codepoint = 'c', .mods = .{ .ctrl = true } },
     full_screen: vaxis.Key = .{ .codepoint = 'f' },

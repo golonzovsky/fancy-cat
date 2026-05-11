@@ -331,6 +331,47 @@ pub const LinkTarget = union(enum) {
     uri: []u8, // owned; caller frees with allocator passed to findLinkAtPoint
 };
 
+pub const PageLink = struct {
+    rect: c.fz_rect,
+    target: LinkTarget,
+};
+
+pub fn loadLinks(self: *Self, allocator: std.mem.Allocator, page_number: u16) ![]PageLink {
+    var out = std.ArrayList(PageLink){};
+    errdefer {
+        for (out.items) |item| switch (item.target) {
+            .uri => |u| allocator.free(u),
+            .page => {},
+        };
+        out.deinit(allocator);
+    }
+
+    const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number))) orelse return out.toOwnedSlice(allocator);
+    defer c.fz_drop_page(self.ctx, page);
+
+    const links = c.fz_load_links_z(self.ctx, page) orelse return out.toOwnedSlice(allocator);
+    defer c.fz_drop_link(self.ctx, links);
+
+    var node: ?*c.fz_link = links;
+    while (node) |link| : (node = link.next) {
+        if (link.uri == null) continue;
+        const uri_zlen = std.mem.len(link.uri);
+        const uri_slice = link.uri[0..uri_zlen];
+
+        const target: LinkTarget = if (c.fz_is_external_link(self.ctx, link.uri) != 0) blk: {
+            const owned = try allocator.dupe(u8, uri_slice);
+            break :blk .{ .uri = owned };
+        } else blk: {
+            const resolved = c.fz_resolve_link_page_z(self.ctx, self.doc, link.uri);
+            if (resolved < 0 or resolved >= self.total_pages) continue;
+            break :blk .{ .page = @as(u16, @intCast(resolved)) };
+        };
+
+        try out.append(allocator, .{ .rect = link.rect, .target = target });
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 pub fn getDocumentKey(self: *Self, allocator: std.mem.Allocator) ![]u8 {
     var id_buf: [256]u8 = undefined;
     const id_len = c.fz_pdf_id_hex_z(self.ctx, self.doc, &id_buf, id_buf.len);

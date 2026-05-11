@@ -2,6 +2,7 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const ViewMode = @import("modes/ViewMode.zig");
 const CommandMode = @import("modes/CommandMode.zig");
+const HintMode = @import("modes/HintMode.zig");
 const fzwatch = @import("fzwatch");
 const Config = @import("config/Config.zig");
 const DocumentHandler = @import("handlers/DocumentHandler.zig");
@@ -20,8 +21,8 @@ pub const Event = union(enum) {
     reload_done: usize,
 };
 
-pub const ModeType = enum { view, command };
-pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode };
+pub const ModeType = enum { view, command, hint };
+pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode };
 pub const ReloadIndicatorState = enum { idle, reload, watching };
 
 pub const VisiblePage = struct {
@@ -178,6 +179,7 @@ pub const Context = struct {
         self.jump_forward.deinit(self.allocator);
         switch (self.current_mode) {
             .command => |*state| state.deinit(),
+            .hint => |*state| state.deinit(),
             .view => {},
         }
         if (self.watcher) |*w| {
@@ -263,12 +265,14 @@ pub const Context = struct {
     pub fn changeMode(self: *Self, new_state: ModeType) void {
         switch (self.current_mode) {
             .command => |*state| state.deinit(),
+            .hint => |*state| state.deinit(),
             .view => {},
         }
 
         switch (new_state) {
             .view => self.current_mode = .{ .view = ViewMode.init(self) },
             .command => self.current_mode = .{ .command = CommandMode.init(self) },
+            .hint => self.current_mode = .{ .hint = HintMode.init(self) },
         }
     }
 
@@ -288,6 +292,7 @@ pub const Context = struct {
         try switch (self.current_mode) {
             .view => |*state| state.handleKeyStroke(key, km),
             .command => |*state| state.handleKeyStroke(key, km),
+            .hint => |*state| state.handleKeyStroke(key, km),
         };
     }
 
@@ -491,6 +496,7 @@ pub const Context = struct {
                     .height = @intCast(visible_h),
                 },
                 .size = .{ .cols = dest_cols, .rows = dest_rows },
+                .z_index = if (self.current_mode == .hint) -1 else null,
             });
 
             if (self.visible_pages_len < self.visible_pages.len) {
@@ -615,7 +621,7 @@ pub const Context = struct {
                 },
                 .mode_aware => |mode_aware| {
                     switch (self.current_mode) {
-                        .view => try expandPlaceholders(&expanded_items, mode_aware.view),
+                        .view, .hint => try expandPlaceholders(&expanded_items, mode_aware.view),
                         .command => try expandPlaceholders(&expanded_items, mode_aware.command),
                     }
                 },
@@ -746,6 +752,7 @@ pub const Context = struct {
         } else if (self.config.status_bar.enabled) {
             try self.drawStatusBar(win);
         }
+        if (self.current_mode == .hint) self.current_mode.hint.drawHints(win);
     }
 
     pub fn toggleFullScreen(self: *Self) void {

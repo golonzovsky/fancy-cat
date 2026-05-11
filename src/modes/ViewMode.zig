@@ -151,6 +151,15 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             }.action,
         },
         .{
+            .codepoint = km.hint_mode.codepoint,
+            .mods = km.hint_mode.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.changeMode(.hint);
+                }
+            }.action,
+        },
+        .{
             .codepoint = km.jump_back.codepoint,
             .mods = km.jump_back.mods,
             .handler = struct {
