@@ -117,9 +117,16 @@ pub fn drawCommandBar(self: *Self, win: vaxis.Window) void {
 pub fn executeCommand(self: *Self, cmd: []const u8) void {
     if (self.handleQuit(cmd)) return;
     if (self.handleAltShift(cmd)) return;
+    if (self.handleHLock(cmd)) return;
     if (self.handleGoToPage(cmd)) return;
     if (self.handleZoom(cmd)) return;
     if (self.handleScroll(cmd)) return;
+}
+
+fn handleHLock(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.eql(u8, cmd, "hlock")) return false;
+    self.context.lock_horizontal_scroll = !self.context.lock_horizontal_scroll;
+    return true;
 }
 
 fn handleAltShift(self: *Self, cmd: []const u8) bool {

@@ -160,6 +160,7 @@ pub const StatusBar = struct {
     pub const SEPARATOR = "<separator>";
     pub const PAGE = "<page>";
     pub const TOTAL_PAGES = "<total_pages>";
+    pub const HLOCK = "<hlock>";
 
     pub const default_items: []const StatusBar.Item = &.{
         .{ .styled = .{ .text = " ", .style = default_style } },
@@ -176,6 +177,7 @@ pub const StatusBar = struct {
             .watching = .{ .text = " ", .style = default_style },
         } },
         .{ .styled = .{ .text = SEPARATOR, .style = default_style } },
+        .{ .styled = .{ .text = HLOCK, .style = default_style } },
         .{ .styled = .{ .text = PAGE, .style = default_style } },
         .{ .styled = .{ .text = ":", .style = default_style } },
         .{ .styled = .{ .text = TOTAL_PAGES, .style = default_style } },

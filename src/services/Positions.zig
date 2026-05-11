@@ -10,6 +10,7 @@ pub const Position = struct {
     odd_shift_x: i32 = 0,
     colorize: bool = false,
     crop: bool = false,
+    hlock: bool = false,
 };
 
 allocator: std.mem.Allocator,
@@ -86,6 +87,9 @@ pub fn getSavedPosition(self: *Self) ?Position {
     if (entry.object.get("crop")) |v| if (v == .bool) {
         pos.crop = v.bool;
     };
+    if (entry.object.get("hlock")) |v| if (v == .bool) {
+        pos.hlock = v.bool;
+    };
     return pos;
 }
 
@@ -115,6 +119,7 @@ pub fn save(self: *Self, pos: Position) void {
     entry.put("odd_shift_x", .{ .integer = @as(i64, pos.odd_shift_x) }) catch return;
     entry.put("colorize", .{ .bool = pos.colorize }) catch return;
     entry.put("crop", .{ .bool = pos.crop }) catch return;
+    entry.put("hlock", .{ .bool = pos.hlock }) catch return;
     root.put(self.doc_path, .{ .object = entry }) catch return;
 
     const json_str = std.json.Stringify.valueAlloc(a, std.json.Value{ .object = root }, .{ .whitespace = .indent_2 }) catch return;

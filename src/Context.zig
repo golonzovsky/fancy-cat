@@ -76,6 +76,7 @@ pub const Context = struct {
     last_pix_per_row: u16,
     jump_back: std.ArrayList(JumpPosition),
     jump_forward: std.ArrayList(JumpPosition),
+    lock_horizontal_scroll: bool,
 
     pub fn init(allocator: std.mem.Allocator, args: [][:0]u8) !Self {
         const path = args[1];
@@ -112,6 +113,7 @@ pub const Context = struct {
                 }
             }
         }
+        const restored_hlock: bool = if (positions.getSavedPosition()) |p| p.hlock else false;
 
         var watcher: ?fzwatch.Watcher = null;
         if (config.file_monitor.enabled) {
@@ -155,6 +157,7 @@ pub const Context = struct {
             .last_pix_per_row = 1,
             .jump_back = .{},
             .jump_forward = .{},
+            .lock_horizontal_scroll = restored_hlock,
         };
     }
 
@@ -167,6 +170,7 @@ pub const Context = struct {
             .odd_shift_x = self.document_handler.getOddShiftX(),
             .colorize = self.config.general.colorize,
             .crop = self.document_handler.getCropToContent(),
+            .hlock = self.lock_horizontal_scroll,
         });
         self.positions.deinit();
         self.allocator.free(self.doc_key);
@@ -317,10 +321,10 @@ pub const Context = struct {
                             }
                         },
                         .wheel_left => {
-                            self.document_handler.offsetScroll(step, 0);
+                            if (!self.lock_horizontal_scroll) self.document_handler.offsetScroll(step, 0);
                         },
                         .wheel_right => {
-                            self.document_handler.offsetScroll(-step, 0);
+                            if (!self.lock_horizontal_scroll) self.document_handler.offsetScroll(-step, 0);
                         },
                         .left => {
                             try self.handleLeftClick(mouse);
@@ -715,6 +719,8 @@ pub const Context = struct {
             text = try std.fmt.allocPrint(allocator, "{}", .{self.document_handler.getTotalPages()});
         } else if (std.mem.eql(u8, text, Config.StatusBar.SEPARATOR)) {
             text = "";
+        } else if (std.mem.eql(u8, text, Config.StatusBar.HLOCK)) {
+            text = if (self.lock_horizontal_scroll) " HLOCK " else "";
         }
 
         const width = vaxis.gwidth.gwidth(text, .wcwidth);
