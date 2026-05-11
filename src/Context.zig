@@ -105,6 +105,10 @@ pub const Context = struct {
                     document_handler.setScrollY(pos.scroll_y);
                     if (pos.zoom > 0) document_handler.setActiveZoom(pos.zoom);
                     document_handler.setOddShiftX(pos.odd_shift_x);
+                    config.general.colorize = pos.colorize;
+                    if (pos.crop != document_handler.getCropToContent()) {
+                        document_handler.toggleCropToContent();
+                    }
                 }
             }
         }
@@ -161,6 +165,8 @@ pub const Context = struct {
             .scroll_y = self.document_handler.getScrollY(),
             .zoom = self.document_handler.getActiveZoom(),
             .odd_shift_x = self.document_handler.getOddShiftX(),
+            .colorize = self.config.general.colorize,
+            .crop = self.document_handler.getCropToContent(),
         });
         self.positions.deinit();
         self.allocator.free(self.doc_key);

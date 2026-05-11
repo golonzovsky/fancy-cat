@@ -8,6 +8,8 @@ pub const Position = struct {
     scroll_y: i32 = 0,
     zoom: f32 = 0,
     odd_shift_x: i32 = 0,
+    colorize: bool = false,
+    crop: bool = false,
 };
 
 allocator: std.mem.Allocator,
@@ -78,6 +80,12 @@ pub fn getSavedPosition(self: *Self) ?Position {
     if (entry.object.get("odd_shift_x")) |v| if (v == .integer) {
         pos.odd_shift_x = std.math.cast(i32, v.integer) orelse 0;
     };
+    if (entry.object.get("colorize")) |v| if (v == .bool) {
+        pos.colorize = v.bool;
+    };
+    if (entry.object.get("crop")) |v| if (v == .bool) {
+        pos.crop = v.bool;
+    };
     return pos;
 }
 
@@ -105,6 +113,8 @@ pub fn save(self: *Self, pos: Position) void {
     entry.put("scroll_y", .{ .integer = @as(i64, pos.scroll_y) }) catch return;
     entry.put("zoom", .{ .float = pos.zoom }) catch return;
     entry.put("odd_shift_x", .{ .integer = @as(i64, pos.odd_shift_x) }) catch return;
+    entry.put("colorize", .{ .bool = pos.colorize }) catch return;
+    entry.put("crop", .{ .bool = pos.crop }) catch return;
     root.put(self.doc_path, .{ .object = entry }) catch return;
 
     const json_str = std.json.Stringify.valueAlloc(a, std.json.Value{ .object = root }, .{ .whitespace = .indent_2 }) catch return;
