@@ -39,6 +39,22 @@ int fz_resolve_link_page_z(fz_context *ctx, fz_document *doc, const char *uri) {
   return page;
 }
 
+int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out) {
+  int ok = 0;
+  fz_device *dev = NULL;
+  fz_rect bbox = fz_empty_rect;
+  fz_try(ctx) {
+    dev = fz_new_bbox_device(ctx, &bbox);
+    fz_run_page(ctx, page, dev, fz_identity, NULL);
+    fz_close_device(ctx, dev);
+    *out = bbox;
+    ok = 1;
+  }
+  fz_always(ctx) { if (dev) fz_drop_device(ctx, dev); }
+  fz_catch(ctx) { ok = 0; }
+  return ok;
+}
+
 int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size) {
   int written = 0;
   fz_try(ctx) {

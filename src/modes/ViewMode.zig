@@ -75,6 +75,16 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             }.action,
         },
         .{
+            .codepoint = km.crop_to_content.codepoint,
+            .mods = km.crop_to_content.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.document_handler.toggleCropToContent();
+                    s.reload_page = true;
+                }
+            }.action,
+        },
+        .{
             .codepoint = km.full_screen.codepoint,
             .mods = km.full_screen.mods,
             .handler = struct {

@@ -20,6 +20,8 @@ path: []const u8,
 active_zoom: f32,
 default_zoom: f32,
 width_mode: bool,
+crop_to_content: bool,
+crop_margin: f32,
 pix_scroll_x: i32,
 pix_scroll_y: i32,
 rendered_w: u32,
@@ -61,6 +63,8 @@ pub fn init(
         .active_zoom = 0,
         .default_zoom = 0,
         .width_mode = false,
+        .crop_to_content = false,
+        .crop_margin = 4,
         .pix_scroll_x = 0,
         .pix_scroll_y = 0,
         .rendered_w = 0,
@@ -154,19 +158,41 @@ pub fn renderPage(
             continue;
         };
         defer c.fz_drop_page(self.ctx, page);
-        const bound = c.fz_bound_page(self.ctx, page);
+        const page_bound = c.fz_bound_page(self.ctx, page);
 
-        self.calculateZoomLevel(window_width, window_height, bound);
+        var render_bound = page_bound;
+        var origin_x: f32 = 0;
+        var origin_y: f32 = 0;
+        if (self.crop_to_content) {
+            var content_bbox: c.fz_rect = undefined;
+            if (c.fz_page_content_bbox_z(self.ctx, page, &content_bbox) != 0) {
+                const m = self.crop_margin;
+                content_bbox.x0 = @max(page_bound.x0, content_bbox.x0 - m);
+                content_bbox.y0 = @max(page_bound.y0, content_bbox.y0 - m);
+                content_bbox.x1 = @min(page_bound.x1, content_bbox.x1 + m);
+                content_bbox.y1 = @min(page_bound.y1, content_bbox.y1 + m);
+                if (content_bbox.x1 > content_bbox.x0 and content_bbox.y1 > content_bbox.y0) {
+                    render_bound = content_bbox;
+                    origin_x = content_bbox.x0;
+                    origin_y = content_bbox.y0;
+                }
+            }
+        }
 
-        const full_w = @max(1.0, self.active_zoom * bound.x1);
-        const full_h = @max(1.0, self.active_zoom * bound.y1);
+        const render_w_pdf = render_bound.x1 - render_bound.x0;
+        const render_h_pdf = render_bound.y1 - render_bound.y0;
+        self.calculateZoomLevel(window_width, window_height, c.fz_make_rect(0, 0, render_w_pdf, render_h_pdf));
+
+        const full_w = @max(1.0, self.active_zoom * render_w_pdf);
+        const full_h = @max(1.0, self.active_zoom * render_h_pdf);
 
         const bbox = c.fz_make_irect(0, 0, @intFromFloat(full_w), @intFromFloat(full_h));
         const pix = c.fz_new_pixmap_with_bbox(self.ctx, c.fz_device_rgb(self.ctx), bbox, null, 0);
         defer c.fz_drop_pixmap(self.ctx, pix);
         c.fz_clear_pixmap_with_value(self.ctx, pix, 0xFF);
 
-        const ctm = c.fz_scale(self.active_zoom, self.active_zoom);
+        var ctm = c.fz_scale(self.active_zoom, self.active_zoom);
+        ctm = c.fz_pre_translate(ctm, -origin_x, -origin_y);
 
         const dev = c.fz_new_draw_device(self.ctx, ctm, pix);
         defer c.fz_drop_device(self.ctx, dev);
@@ -196,8 +222,18 @@ pub fn renderPage(
             .base64 = encoded,
             .width = @as(u16, @intCast(width)),
             .height = @as(u16, @intCast(height)),
+            .origin_x = origin_x,
+            .origin_y = origin_y,
         };
     }
+}
+
+pub fn toggleCropToContent(self: *Self) void {
+    self.crop_to_content = !self.crop_to_content;
+    self.default_zoom = 0;
+    self.active_zoom = 0;
+    self.pix_scroll_x = 0;
+    self.pix_scroll_y = 0;
 }
 
 fn maxScrollX(self: *const Self, viewport_w: u32) i32 {

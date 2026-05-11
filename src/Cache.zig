@@ -8,8 +8,13 @@ pub const Key = struct {
     page: u16,
     width_mode: bool,
     zoom: u32,
+    crop: bool,
 };
-pub const CachedImage = struct { image: vaxis.Image };
+pub const CachedImage = struct {
+    image: vaxis.Image,
+    origin_x: f32 = 0,
+    origin_y: f32 = 0,
+};
 
 const Node = struct {
     key: Key,
