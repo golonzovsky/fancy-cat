@@ -9,6 +9,7 @@ pub const Key = struct {
     width_mode: bool,
     zoom: u32,
     crop: bool,
+    shift_x: i32,
 };
 pub const CachedImage = struct {
     image: vaxis.Image,

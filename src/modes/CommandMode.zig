@@ -116,9 +116,21 @@ pub fn drawCommandBar(self: *Self, win: vaxis.Window) void {
 
 pub fn executeCommand(self: *Self, cmd: []const u8) void {
     if (self.handleQuit(cmd)) return;
+    if (self.handleAltShift(cmd)) return;
     if (self.handleGoToPage(cmd)) return;
     if (self.handleZoom(cmd)) return;
     if (self.handleScroll(cmd)) return;
+}
+
+fn handleAltShift(self: *Self, cmd: []const u8) bool {
+    const prefix = "oddx";
+    if (!std.mem.startsWith(u8, cmd, prefix)) return false;
+    const rest = std.mem.trim(u8, cmd[prefix.len..], &std.ascii.whitespace);
+    if (rest.len == 0) return false;
+    const n = std.fmt.parseInt(i32, rest, 10) catch return false;
+    self.context.document_handler.setOddShiftX(n);
+    self.context.resetCurrentPage();
+    return true;
 }
 
 fn handleQuit(self: *Self, cmd: []const u8) bool {

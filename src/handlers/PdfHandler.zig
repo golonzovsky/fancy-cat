@@ -22,6 +22,7 @@ default_zoom: f32,
 width_mode: bool,
 crop_to_content: bool,
 crop_margin: f32,
+odd_shift_x: i32,
 pix_scroll_x: i32,
 pix_scroll_y: i32,
 rendered_w: u32,
@@ -65,6 +66,7 @@ pub fn init(
         .width_mode = false,
         .crop_to_content = false,
         .crop_margin = 4,
+        .odd_shift_x = 0,
         .pix_scroll_x = 0,
         .pix_scroll_y = 0,
         .rendered_w = 0,
@@ -192,7 +194,11 @@ pub fn renderPage(
         c.fz_clear_pixmap_with_value(self.ctx, pix, 0xFF);
 
         var ctm = c.fz_scale(self.active_zoom, self.active_zoom);
-        ctm = c.fz_pre_translate(ctm, -origin_x, -origin_y);
+        const shift_pdf: f32 = if (page_number % 2 == 1 and self.active_zoom > 0)
+            @as(f32, @floatFromInt(self.odd_shift_x)) / self.active_zoom
+        else
+            0;
+        ctm = c.fz_pre_translate(ctm, -origin_x + shift_pdf, -origin_y);
 
         const dev = c.fz_new_draw_device(self.ctx, ctm, pix);
         defer c.fz_drop_device(self.ctx, dev);

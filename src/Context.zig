@@ -104,6 +104,7 @@ pub const Context = struct {
                     document_handler.setScrollX(pos.scroll_x);
                     document_handler.setScrollY(pos.scroll_y);
                     if (pos.zoom > 0) document_handler.setActiveZoom(pos.zoom);
+                    document_handler.setOddShiftX(pos.odd_shift_x);
                 }
             }
         }
@@ -159,6 +160,7 @@ pub const Context = struct {
             .scroll_x = self.document_handler.getScrollX(),
             .scroll_y = self.document_handler.getScrollY(),
             .zoom = self.document_handler.getActiveZoom(),
+            .odd_shift_x = self.document_handler.getOddShiftX(),
         });
         self.positions.deinit();
         self.allocator.free(self.doc_key);
@@ -353,6 +355,7 @@ pub const Context = struct {
             .width_mode = self.document_handler.getWidthMode(),
             .zoom = @as(u32, @intFromFloat(self.document_handler.getActiveZoom() * 1000.0)),
             .crop = self.document_handler.getCropToContent(),
+            .shift_x = if (page_number % 2 == 1) self.document_handler.getOddShiftX() else 0,
         };
 
         if (self.config.cache.enabled) {
@@ -461,6 +464,8 @@ pub const Context = struct {
             const dest_rows: u16 = @intCast(@max(1, std.math.divCeil(u32, visible_h, pix_per_row) catch 1));
             const x_off: u16 = if (win.width > dest_cols) (win.width - dest_cols) / 2 else 0;
             const y_off: u16 = @intCast(y_pix_used / pix_per_row);
+            const clip_x_eff: u32 = clip_x;
+            const clip_w_eff: u32 = clip_w;
 
             const child = win.child(.{
                 .x_off = x_off,
@@ -470,9 +475,9 @@ pub const Context = struct {
             });
             try img.draw(child, .{
                 .clip_region = .{
-                    .x = @intCast(clip_x),
+                    .x = @intCast(clip_x_eff),
                     .y = @intCast(clip_top),
-                    .width = @intCast(clip_w),
+                    .width = @intCast(clip_w_eff),
                     .height = @intCast(visible_h),
                 },
                 .size = .{ .cols = dest_cols, .rows = dest_rows },
@@ -485,8 +490,8 @@ pub const Context = struct {
                     .vp_y_top = y_pix_used,
                     .vp_y_bot = y_pix_used + visible_h,
                     .vp_x_left = vp_x_left,
-                    .vp_x_right = vp_x_left + clip_w,
-                    .clip_x = clip_x,
+                    .vp_x_right = vp_x_left + clip_w_eff,
+                    .clip_x = clip_x_eff,
                     .clip_y = clip_top,
                     .origin_x = entry.origin_x,
                     .origin_y = entry.origin_y,

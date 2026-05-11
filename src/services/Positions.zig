@@ -7,6 +7,7 @@ pub const Position = struct {
     scroll_x: i32 = 0,
     scroll_y: i32 = 0,
     zoom: f32 = 0,
+    odd_shift_x: i32 = 0,
 };
 
 allocator: std.mem.Allocator,
@@ -74,6 +75,9 @@ pub fn getSavedPosition(self: *Self) ?Position {
         .integer => |i| pos.zoom = @floatFromInt(i),
         else => {},
     };
+    if (entry.object.get("odd_shift_x")) |v| if (v == .integer) {
+        pos.odd_shift_x = std.math.cast(i32, v.integer) orelse 0;
+    };
     return pos;
 }
 
@@ -100,6 +104,7 @@ pub fn save(self: *Self, pos: Position) void {
     entry.put("scroll_x", .{ .integer = @as(i64, pos.scroll_x) }) catch return;
     entry.put("scroll_y", .{ .integer = @as(i64, pos.scroll_y) }) catch return;
     entry.put("zoom", .{ .float = pos.zoom }) catch return;
+    entry.put("odd_shift_x", .{ .integer = @as(i64, pos.odd_shift_x) }) catch return;
     root.put(self.doc_path, .{ .object = entry }) catch return;
 
     const json_str = std.json.Stringify.valueAlloc(a, std.json.Value{ .object = root }, .{ .whitespace = .indent_2 }) catch return;
