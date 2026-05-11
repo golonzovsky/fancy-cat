@@ -39,8 +39,9 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     var useVendorMupdf = true;
-    const prefix = "./local";
-    const location = "./deps/mupdf/local";
+    const root = b.build_root.path orelse ".";
+    const prefix = b.fmt("{s}/mupdf-out", .{root});
+    const location = prefix;
 
     std.fs.cwd().access("./deps/mupdf/Makefile", .{}) catch |err| {
         if (err == error.FileNotFound) {
