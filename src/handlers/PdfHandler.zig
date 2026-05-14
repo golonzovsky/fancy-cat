@@ -23,6 +23,7 @@ width_mode: bool,
 crop_to_content: bool,
 crop_margin: f32,
 odd_shift_x: i32,
+pending_scroll_pdf_y: ?f32,
 pix_scroll_x: i32,
 pix_scroll_y: i32,
 rendered_w: u32,
@@ -67,6 +68,7 @@ pub fn init(
         .crop_to_content = false,
         .crop_margin = 4,
         .odd_shift_x = 0,
+        .pending_scroll_pdf_y = null,
         .pix_scroll_x = 0,
         .pix_scroll_y = 0,
         .rendered_w = 0,
@@ -326,8 +328,10 @@ pub fn toggleWidthMode(self: *Self) void {
     self.pix_scroll_y = 0;
 }
 
+pub const PageTarget = struct { num: u16, y: f32 };
+
 pub const LinkTarget = union(enum) {
-    page: u16,
+    page: PageTarget,
     uri: []u8, // owned; caller frees with allocator passed to findLinkAtPoint
 };
 
@@ -358,13 +362,14 @@ pub fn loadLinks(self: *Self, allocator: std.mem.Allocator, page_number: u16) ![
         const uri_zlen = std.mem.len(link.uri);
         const uri_slice = link.uri[0..uri_zlen];
 
+        var dest_y: f32 = 0;
         const target: LinkTarget = if (c.fz_is_external_link(self.ctx, link.uri) != 0) blk: {
             const owned = try allocator.dupe(u8, uri_slice);
             break :blk .{ .uri = owned };
         } else blk: {
-            const resolved = c.fz_resolve_link_page_z(self.ctx, self.doc, link.uri);
+            const resolved = c.fz_resolve_link_target_z(self.ctx, self.doc, link.uri, &dest_y);
             if (resolved < 0 or resolved >= self.total_pages) continue;
-            break :blk .{ .page = @as(u16, @intCast(resolved)) };
+            break :blk .{ .page = .{ .num = @as(u16, @intCast(resolved)), .y = dest_y } };
         };
 
         try out.append(allocator, .{ .rect = link.rect, .target = target });
@@ -426,10 +431,11 @@ pub fn findLinkAtPoint(
             const owned = allocator.dupe(u8, uri_slice) catch return null;
             return .{ .uri = owned };
         }
-        const resolved = c.fz_resolve_link_page_z(self.ctx, self.doc, link.uri);
+        var dest_y: f32 = 0;
+        const resolved = c.fz_resolve_link_target_z(self.ctx, self.doc, link.uri, &dest_y);
         if (resolved < 0) continue;
         if (resolved >= self.total_pages) continue;
-        return .{ .page = @as(u16, @intCast(resolved)) };
+        return .{ .page = .{ .num = @as(u16, @intCast(resolved)), .y = dest_y } };
     }
     return null;
 }

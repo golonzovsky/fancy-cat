@@ -19,8 +19,18 @@ pub fn init(context: *Context) Self {
 }
 
 pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
-    // O(n) but n is small
-    // Centralized key handling
+    if (self.context.pending_op) |op| {
+        self.context.pending_op = null;
+        if (key.codepoint >= 'a' and key.codepoint <= 'z') {
+            const letter: u8 = @intCast(key.codepoint);
+            switch (op) {
+                .set_mark => self.context.setMark(letter),
+                .jump_mark => self.context.jumpToMark(letter),
+            }
+        }
+        return;
+    }
+
     const key_actions = &[_]KeyAction{
         .{
             .codepoint = km.next.codepoint,
@@ -156,6 +166,24 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             .handler = struct {
                 fn action(s: *Context) void {
                     s.changeMode(.hint);
+                }
+            }.action,
+        },
+        .{
+            .codepoint = km.set_mark.codepoint,
+            .mods = km.set_mark.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.pending_op = .set_mark;
+                }
+            }.action,
+        },
+        .{
+            .codepoint = km.jump_mark.codepoint,
+            .mods = km.jump_mark.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.pending_op = .jump_mark;
                 }
             }.action,
         },

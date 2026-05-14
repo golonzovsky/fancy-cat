@@ -42,7 +42,7 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             self.context.history.addToHistory(cmd);
         }
 
-        self.context.changeMode(.view);
+        if (self.context.current_mode == .command) self.context.changeMode(.view);
         return;
     }
 
@@ -118,9 +118,41 @@ pub fn executeCommand(self: *Self, cmd: []const u8) void {
     if (self.handleQuit(cmd)) return;
     if (self.handleAltShift(cmd)) return;
     if (self.handleHLock(cmd)) return;
+    if (self.handleMarks(cmd)) return;
+    if (self.handleMarkComment(cmd)) return;
+    if (self.handleDelMark(cmd)) return;
     if (self.handleGoToPage(cmd)) return;
     if (self.handleZoom(cmd)) return;
     if (self.handleScroll(cmd)) return;
+}
+
+fn handleMarks(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.eql(u8, cmd, "marks")) return false;
+    self.context.changeMode(.marks);
+    return true;
+}
+
+fn handleMarkComment(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.startsWith(u8, cmd, "mark ")) return false;
+    const rest = std.mem.trim(u8, cmd["mark ".len..], &std.ascii.whitespace);
+    if (rest.len < 2) return false;
+    const letter = rest[0];
+    if (letter < 'a' or letter > 'z') return false;
+    const comment = std.mem.trim(u8, rest[1..], &std.ascii.whitespace);
+    self.context.setMark(letter);
+    self.context.setMarkComment(letter, comment) catch {};
+    return true;
+}
+
+fn handleDelMark(self: *Self, cmd: []const u8) bool {
+    const prefix = "delmark ";
+    if (!std.mem.startsWith(u8, cmd, prefix)) return false;
+    const rest = std.mem.trim(u8, cmd[prefix.len..], &std.ascii.whitespace);
+    if (rest.len != 1) return false;
+    const letter = rest[0];
+    if (letter < 'a' or letter > 'z') return false;
+    self.context.deleteMark(letter);
+    return true;
 }
 
 fn handleHLock(self: *Self, cmd: []const u8) bool {

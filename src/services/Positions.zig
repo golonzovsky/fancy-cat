@@ -13,6 +13,14 @@ pub const Position = struct {
     hlock: bool = false,
 };
 
+pub const Mark = struct {
+    letter: u8,
+    page: u16,
+    scroll_x: i32,
+    scroll_y: i32,
+    comment: []const u8 = "",
+};
+
 allocator: std.mem.Allocator,
 config: *Config,
 doc_path: []const u8,
@@ -93,7 +101,38 @@ pub fn getSavedPosition(self: *Self) ?Position {
     return pos;
 }
 
-pub fn save(self: *Self, pos: Position) void {
+pub fn loadMarks(self: *Self, allocator: std.mem.Allocator) std.ArrayList(Mark) {
+    var out = std.ArrayList(Mark){};
+    if (!self.have_data) return out;
+    const entry = self.all.value.object.get(self.doc_path) orelse return out;
+    if (entry != .object) return out;
+    const arr = entry.object.get("marks") orelse return out;
+    if (arr != .array) return out;
+    for (arr.array.items) |item| {
+        if (item != .object) continue;
+        var m = Mark{ .letter = 0, .page = 0, .scroll_x = 0, .scroll_y = 0 };
+        if (item.object.get("letter")) |v| if (v == .string and v.string.len > 0) {
+            m.letter = v.string[0];
+        };
+        if (item.object.get("page")) |v| if (v == .integer) {
+            m.page = std.math.cast(u16, v.integer) orelse 0;
+        };
+        if (item.object.get("scroll_x")) |v| if (v == .integer) {
+            m.scroll_x = std.math.cast(i32, v.integer) orelse 0;
+        };
+        if (item.object.get("scroll_y")) |v| if (v == .integer) {
+            m.scroll_y = std.math.cast(i32, v.integer) orelse 0;
+        };
+        if (item.object.get("comment")) |v| if (v == .string) {
+            m.comment = allocator.dupe(u8, v.string) catch "";
+        };
+        if (m.letter == 0) continue;
+        out.append(allocator, m) catch break;
+    }
+    return out;
+}
+
+pub fn save(self: *Self, pos: Position, marks: []const Mark) void {
     if (self.file_path.len == 0) return;
 
     if (std.fs.path.dirname(self.file_path)) |dir| std.fs.cwd().makePath(dir) catch {};
@@ -120,6 +159,23 @@ pub fn save(self: *Self, pos: Position) void {
     entry.put("colorize", .{ .bool = pos.colorize }) catch return;
     entry.put("crop", .{ .bool = pos.crop }) catch return;
     entry.put("hlock", .{ .bool = pos.hlock }) catch return;
+
+    if (marks.len > 0) {
+        var arr = std.json.Array.init(a);
+        for (marks) |m| {
+            var obj = std.json.ObjectMap.init(a);
+            const letter_str = a.alloc(u8, 1) catch return;
+            letter_str[0] = m.letter;
+            obj.put("letter", .{ .string = letter_str }) catch return;
+            obj.put("page", .{ .integer = @as(i64, m.page) }) catch return;
+            obj.put("scroll_x", .{ .integer = @as(i64, m.scroll_x) }) catch return;
+            obj.put("scroll_y", .{ .integer = @as(i64, m.scroll_y) }) catch return;
+            obj.put("comment", .{ .string = m.comment }) catch return;
+            arr.append(.{ .object = obj }) catch return;
+        }
+        entry.put("marks", .{ .array = arr }) catch return;
+    }
+
     root.put(self.doc_path, .{ .object = entry }) catch return;
 
     const json_str = std.json.Stringify.valueAlloc(a, std.json.Value{ .object = root }, .{ .whitespace = .indent_2 }) catch return;

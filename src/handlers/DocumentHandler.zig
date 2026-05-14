@@ -112,6 +112,16 @@ pub fn setActiveZoom(self: *Self, zoom: f32) void {
     self.pdf_handler.active_zoom = zoom;
 }
 
+pub fn setPendingScrollPdfY(self: *Self, y: f32) void {
+    self.pdf_handler.pending_scroll_pdf_y = y;
+}
+
+pub fn takePendingScrollPdfY(self: *Self) ?f32 {
+    const y = self.pdf_handler.pending_scroll_pdf_y;
+    self.pdf_handler.pending_scroll_pdf_y = null;
+    return y;
+}
+
 pub fn setOddShiftX(self: *Self, x: i32) void {
     self.pdf_handler.odd_shift_x = x;
 }

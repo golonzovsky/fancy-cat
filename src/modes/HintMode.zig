@@ -47,7 +47,7 @@ pub fn deinit(self: *Self) void {
 fn targetsEqual(a: PdfHandler.LinkTarget, b: PdfHandler.LinkTarget) bool {
     return switch (a) {
         .page => |pa| switch (b) {
-            .page => |pb| pa == pb,
+            .page => |pb| pa.num == pb.num and pa.y == pb.y,
             .uri => false,
         },
         .uri => |ua| switch (b) {
@@ -144,10 +144,11 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             if (std.mem.eql(u8, h.label, pfx)) {
                 const target = h.target;
                 switch (target) {
-                    .page => |page| {
+                    .page => |dest| {
                         self.context.pushJump();
-                        _ = self.context.document_handler.goToPage(page + 1);
+                        _ = self.context.document_handler.goToPage(dest.num + 1);
                         self.context.document_handler.setScrollY(0);
+                        self.context.document_handler.setPendingScrollPdfY(dest.y);
                         self.context.resetCurrentPage();
                     },
                     .uri => |uri| {

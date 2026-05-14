@@ -39,6 +39,18 @@ int fz_resolve_link_page_z(fz_context *ctx, fz_document *doc, const char *uri) {
   return page;
 }
 
+int fz_resolve_link_target_z(fz_context *ctx, fz_document *doc, const char *uri, float *yp) {
+  int page = -1;
+  float x = 0, y = 0;
+  fz_try(ctx) {
+    fz_location loc = fz_resolve_link(ctx, doc, uri, &x, &y);
+    page = fz_page_number_from_location(ctx, doc, loc);
+  }
+  fz_catch(ctx) {}
+  if (yp) *yp = y;
+  return page;
+}
+
 int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out) {
   int ok = 0;
   fz_device *dev = NULL;

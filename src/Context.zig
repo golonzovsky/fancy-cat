@@ -3,6 +3,7 @@ const vaxis = @import("vaxis");
 const ViewMode = @import("modes/ViewMode.zig");
 const CommandMode = @import("modes/CommandMode.zig");
 const HintMode = @import("modes/HintMode.zig");
+const MarksMode = @import("modes/MarksMode.zig");
 const fzwatch = @import("fzwatch");
 const Config = @import("config/Config.zig");
 const DocumentHandler = @import("handlers/DocumentHandler.zig");
@@ -21,8 +22,8 @@ pub const Event = union(enum) {
     reload_done: usize,
 };
 
-pub const ModeType = enum { view, command, hint };
-pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode };
+pub const ModeType = enum { view, command, hint, marks };
+pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode };
 pub const ReloadIndicatorState = enum { idle, reload, watching };
 
 pub const VisiblePage = struct {
@@ -78,6 +79,8 @@ pub const Context = struct {
     jump_back: std.ArrayList(JumpPosition),
     jump_forward: std.ArrayList(JumpPosition),
     lock_horizontal_scroll: bool,
+    marks: std.ArrayList(Positions.Mark),
+    pending_op: ?enum { set_mark, jump_mark },
 
     pub fn init(allocator: std.mem.Allocator, args: [][:0]u8) !Self {
         const path = args[1];
@@ -115,6 +118,8 @@ pub const Context = struct {
             }
         }
         const restored_hlock: bool = if (positions.getSavedPosition()) |p| p.hlock else false;
+        var marks = positions.loadMarks(allocator);
+        errdefer marks.deinit(allocator);
 
         var watcher: ?fzwatch.Watcher = null;
         if (config.file_monitor.enabled) {
@@ -159,6 +164,8 @@ pub const Context = struct {
             .jump_back = .{},
             .jump_forward = .{},
             .lock_horizontal_scroll = restored_hlock,
+            .marks = marks,
+            .pending_op = null,
         };
     }
 
@@ -172,7 +179,11 @@ pub const Context = struct {
             .colorize = self.config.general.colorize,
             .crop = self.document_handler.getCropToContent(),
             .hlock = self.lock_horizontal_scroll,
-        });
+        }, self.marks.items);
+        for (self.marks.items) |m| {
+            if (m.comment.len > 0) self.allocator.free(m.comment);
+        }
+        self.marks.deinit(self.allocator);
         self.positions.deinit();
         self.allocator.free(self.doc_key);
         self.jump_back.deinit(self.allocator);
@@ -180,6 +191,7 @@ pub const Context = struct {
         switch (self.current_mode) {
             .command => |*state| state.deinit(),
             .hint => |*state| state.deinit(),
+            .marks => |*state| state.deinit(),
             .view => {},
         }
         if (self.watcher) |*w| {
@@ -266,6 +278,7 @@ pub const Context = struct {
         switch (self.current_mode) {
             .command => |*state| state.deinit(),
             .hint => |*state| state.deinit(),
+            .marks => |*state| state.deinit(),
             .view => {},
         }
 
@@ -273,6 +286,7 @@ pub const Context = struct {
             .view => self.current_mode = .{ .view = ViewMode.init(self) },
             .command => self.current_mode = .{ .command = CommandMode.init(self) },
             .hint => self.current_mode = .{ .hint = HintMode.init(self) },
+            .marks => self.current_mode = .{ .marks = MarksMode.init(self) },
         }
     }
 
@@ -293,6 +307,7 @@ pub const Context = struct {
             .view => |*state| state.handleKeyStroke(key, km),
             .command => |*state| state.handleKeyStroke(key, km),
             .hint => |*state| state.handleKeyStroke(key, km),
+            .marks => |*state| state.handleKeyStroke(key, km),
         };
     }
 
@@ -413,9 +428,23 @@ pub const Context = struct {
         const viewport_w_pix: u32 = @as(u32, win.width) * @as(u32, pix_per_col);
         const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
 
+        if (self.current_mode == .marks) return;
+
         var page_num = self.document_handler.getCurrentPageNumber();
         const total_pages = self.document_handler.getTotalPages();
         var cur = try self.getPage(page_num, viewport_w_pix, viewport_h_pix);
+
+        if (self.document_handler.takePendingScrollPdfY()) |pdf_y| {
+            if (!std.math.isNan(pdf_y)) {
+                const zoom = self.document_handler.getActiveZoom();
+                if (zoom > 0) {
+                    const context_px: i32 = @intCast(@as(u32, pix_per_row) * 3);
+                    const target_y: i32 = @intFromFloat((pdf_y - cur.origin_y) * zoom);
+                    self.document_handler.setScrollY(@max(0, target_y - context_px));
+                }
+            }
+        }
+
         var scroll_y: i32 = self.document_handler.getScrollY();
 
         while (scroll_y < 0 and page_num > 0) {
@@ -496,7 +525,7 @@ pub const Context = struct {
                     .height = @intCast(visible_h),
                 },
                 .size = .{ .cols = dest_cols, .rows = dest_rows },
-                .z_index = if (self.current_mode == .hint) -1 else null,
+                .z_index = if (self.current_mode == .hint or self.current_mode == .marks) -1 else null,
             });
 
             if (self.visible_pages_len < self.visible_pages.len) {
@@ -544,10 +573,11 @@ pub const Context = struct {
 
     fn followLink(self: *Self, target: @import("./handlers/PdfHandler.zig").LinkTarget) !void {
         switch (target) {
-            .page => |page| {
+            .page => |dest| {
                 self.pushJump();
-                _ = self.document_handler.goToPage(page + 1);
+                _ = self.document_handler.goToPage(dest.num + 1);
                 self.document_handler.setScrollY(0);
+                self.document_handler.setPendingScrollPdfY(dest.y);
                 self.resetCurrentPage();
             },
             .uri => |uri| {
@@ -599,6 +629,61 @@ pub const Context = struct {
         self.resetCurrentPage();
     }
 
+    pub fn setMark(self: *Self, letter: u8) void {
+        const page = self.document_handler.getCurrentPageNumber();
+        const sx = self.document_handler.getScrollX();
+        const sy = self.document_handler.getScrollY();
+        for (self.marks.items) |*m| {
+            if (m.letter == letter) {
+                m.page = page;
+                m.scroll_x = sx;
+                m.scroll_y = sy;
+                return;
+            }
+        }
+        self.marks.append(self.allocator, .{
+            .letter = letter,
+            .page = page,
+            .scroll_x = sx,
+            .scroll_y = sy,
+        }) catch {};
+    }
+
+    pub fn jumpToMark(self: *Self, letter: u8) void {
+        for (self.marks.items) |m| {
+            if (m.letter == letter) {
+                if (m.page < self.document_handler.getTotalPages()) {
+                    self.pushJump();
+                    self.document_handler.setCurrentPage(m.page);
+                    self.document_handler.setScrollX(m.scroll_x);
+                    self.document_handler.setScrollY(m.scroll_y);
+                    self.resetCurrentPage();
+                }
+                return;
+            }
+        }
+    }
+
+    pub fn deleteMark(self: *Self, letter: u8) void {
+        for (self.marks.items, 0..) |m, i| {
+            if (m.letter == letter) {
+                if (m.comment.len > 0) self.allocator.free(m.comment);
+                _ = self.marks.orderedRemove(i);
+                return;
+            }
+        }
+    }
+
+    pub fn setMarkComment(self: *Self, letter: u8, comment: []const u8) !void {
+        for (self.marks.items) |*m| {
+            if (m.letter == letter) {
+                if (m.comment.len > 0) self.allocator.free(m.comment);
+                m.comment = try self.allocator.dupe(u8, comment);
+                return;
+            }
+        }
+    }
+
     pub fn drawStatusBar(self: *Self, win: vaxis.Window) !void {
         const arena = self.arena.allocator();
         defer _ = self.arena.reset(.retain_capacity);
@@ -621,7 +706,7 @@ pub const Context = struct {
                 },
                 .mode_aware => |mode_aware| {
                     switch (self.current_mode) {
-                        .view, .hint => try expandPlaceholders(&expanded_items, mode_aware.view),
+                        .view, .hint, .marks => try expandPlaceholders(&expanded_items, mode_aware.view),
                         .command => try expandPlaceholders(&expanded_items, mode_aware.command),
                     }
                 },
@@ -753,6 +838,7 @@ pub const Context = struct {
             try self.drawStatusBar(win);
         }
         if (self.current_mode == .hint) self.current_mode.hint.drawHints(win);
+        if (self.current_mode == .marks) self.current_mode.marks.draw(win);
     }
 
     pub fn toggleFullScreen(self: *Self) void {
