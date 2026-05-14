@@ -6,17 +6,14 @@ const Config = @import("../config/Config.zig");
 const PdfHandler = @import("../handlers/PdfHandler.zig");
 
 context: *Context,
-entries: []PdfHandler.OutlineEntry,
+entries: []const PdfHandler.OutlineEntry,
 cursor: usize,
 top: usize,
 draw_arena: std.heap.ArenaAllocator,
 
 pub fn init(context: *Context) Self {
-    const empty = &[_]PdfHandler.OutlineEntry{};
-    var entries: []PdfHandler.OutlineEntry = @constCast(empty);
-    if (context.document_handler.loadOutline(context.allocator)) |loaded| {
-        entries = loaded;
-    } else |_| {}
+    const entries: []const PdfHandler.OutlineEntry =
+        context.document_handler.loadOutline(context.allocator) catch &.{};
 
     var cursor: usize = 0;
     const cur_page = context.document_handler.getCurrentPageNumber();
