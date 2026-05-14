@@ -340,6 +340,62 @@ pub const PageLink = struct {
     target: LinkTarget,
 };
 
+pub const OutlineEntry = struct {
+    title: []u8,
+    depth: u8,
+    page: u16,
+    y: f32,
+};
+
+const VisitData = struct {
+    self: *Self,
+    out: *std.ArrayList(OutlineEntry),
+    allocator: std.mem.Allocator,
+    failed: bool,
+};
+
+fn outlineVisitCb(userdata: ?*anyopaque, title: [*c]const u8, depth: c_int, uri: [*c]const u8) callconv(.c) void {
+    const data = @as(*VisitData, @ptrCast(@alignCast(userdata.?)));
+    if (data.failed) return;
+    const title_len: usize = if (title != null) std.mem.len(title) else 0;
+    const uri_len: usize = if (uri != null) std.mem.len(uri) else 0;
+
+    var page: u16 = 0;
+    var y: f32 = 0;
+    if (uri != null and uri_len > 0) {
+        const resolved = c.fz_resolve_link_target_z(data.self.ctx, data.self.doc, uri, &y);
+        if (resolved >= 0 and resolved < data.self.total_pages) {
+            page = @intCast(resolved);
+        }
+    }
+    const title_src: []const u8 = if (title != null) title[0..title_len] else "";
+    const title_dup = data.allocator.dupe(u8, title_src) catch {
+        data.failed = true;
+        return;
+    };
+    data.out.append(data.allocator, .{
+        .title = title_dup,
+        .depth = @intCast(@min(depth, 255)),
+        .page = page,
+        .y = y,
+    }) catch {
+        data.allocator.free(title_dup);
+        data.failed = true;
+    };
+}
+
+pub fn loadOutline(self: *Self, allocator: std.mem.Allocator) ![]OutlineEntry {
+    var out = std.ArrayList(OutlineEntry){};
+    errdefer {
+        for (out.items) |e| allocator.free(e.title);
+        out.deinit(allocator);
+    }
+    var data = VisitData{ .self = self, .out = &out, .allocator = allocator, .failed = false };
+    c.fz_walk_outline_z(self.ctx, self.doc, &data, outlineVisitCb);
+    if (data.failed) return error.OutOfMemory;
+    return out.toOwnedSlice(allocator);
+}
+
 pub fn loadLinks(self: *Self, allocator: std.mem.Allocator, page_number: u16) ![]PageLink {
     var out = std.ArrayList(PageLink){};
     errdefer {

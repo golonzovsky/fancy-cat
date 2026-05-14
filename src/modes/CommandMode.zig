@@ -121,6 +121,7 @@ pub fn executeCommand(self: *Self, cmd: []const u8) void {
     if (self.handleMarks(cmd)) return;
     if (self.handleMarkComment(cmd)) return;
     if (self.handleDelMark(cmd)) return;
+    if (self.handleToc(cmd)) return;
     if (self.handleGoToPage(cmd)) return;
     if (self.handleZoom(cmd)) return;
     if (self.handleScroll(cmd)) return;
@@ -129,6 +130,12 @@ pub fn executeCommand(self: *Self, cmd: []const u8) void {
 fn handleMarks(self: *Self, cmd: []const u8) bool {
     if (!std.mem.eql(u8, cmd, "marks")) return false;
     self.context.changeMode(.marks);
+    return true;
+}
+
+fn handleToc(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.eql(u8, cmd, "toc")) return false;
+    self.context.changeMode(.toc);
     return true;
 }
 

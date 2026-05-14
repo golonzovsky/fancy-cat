@@ -4,6 +4,7 @@ const ViewMode = @import("modes/ViewMode.zig");
 const CommandMode = @import("modes/CommandMode.zig");
 const HintMode = @import("modes/HintMode.zig");
 const MarksMode = @import("modes/MarksMode.zig");
+const TocMode = @import("modes/TocMode.zig");
 const fzwatch = @import("fzwatch");
 const Config = @import("config/Config.zig");
 const DocumentHandler = @import("handlers/DocumentHandler.zig");
@@ -22,8 +23,8 @@ pub const Event = union(enum) {
     reload_done: usize,
 };
 
-pub const ModeType = enum { view, command, hint, marks };
-pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode };
+pub const ModeType = enum { view, command, hint, marks, toc };
+pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode, toc: TocMode };
 pub const ReloadIndicatorState = enum { idle, reload, watching };
 
 pub const VisiblePage = struct {
@@ -192,6 +193,7 @@ pub const Context = struct {
             .command => |*state| state.deinit(),
             .hint => |*state| state.deinit(),
             .marks => |*state| state.deinit(),
+            .toc => |*state| state.deinit(),
             .view => {},
         }
         if (self.watcher) |*w| {
@@ -279,6 +281,7 @@ pub const Context = struct {
             .command => |*state| state.deinit(),
             .hint => |*state| state.deinit(),
             .marks => |*state| state.deinit(),
+            .toc => |*state| state.deinit(),
             .view => {},
         }
 
@@ -287,6 +290,7 @@ pub const Context = struct {
             .command => self.current_mode = .{ .command = CommandMode.init(self) },
             .hint => self.current_mode = .{ .hint = HintMode.init(self) },
             .marks => self.current_mode = .{ .marks = MarksMode.init(self) },
+            .toc => self.current_mode = .{ .toc = TocMode.init(self) },
         }
     }
 
@@ -308,6 +312,7 @@ pub const Context = struct {
             .command => |*state| state.handleKeyStroke(key, km),
             .hint => |*state| state.handleKeyStroke(key, km),
             .marks => |*state| state.handleKeyStroke(key, km),
+            .toc => |*state| state.handleKeyStroke(key, km),
         };
     }
 
@@ -428,7 +433,7 @@ pub const Context = struct {
         const viewport_w_pix: u32 = @as(u32, win.width) * @as(u32, pix_per_col);
         const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
 
-        if (self.current_mode == .marks) return;
+        if (self.current_mode == .marks or self.current_mode == .toc) return;
 
         var page_num = self.document_handler.getCurrentPageNumber();
         const total_pages = self.document_handler.getTotalPages();
@@ -706,7 +711,7 @@ pub const Context = struct {
                 },
                 .mode_aware => |mode_aware| {
                     switch (self.current_mode) {
-                        .view, .hint, .marks => try expandPlaceholders(&expanded_items, mode_aware.view),
+                        .view, .hint, .marks, .toc => try expandPlaceholders(&expanded_items, mode_aware.view),
                         .command => try expandPlaceholders(&expanded_items, mode_aware.command),
                     }
                 },
@@ -839,6 +844,7 @@ pub const Context = struct {
         }
         if (self.current_mode == .hint) self.current_mode.hint.drawHints(win);
         if (self.current_mode == .marks) self.current_mode.marks.draw(win);
+        if (self.current_mode == .toc) self.current_mode.toc.draw(win);
     }
 
     pub fn toggleFullScreen(self: *Self) void {

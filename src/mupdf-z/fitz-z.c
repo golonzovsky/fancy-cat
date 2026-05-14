@@ -51,6 +51,24 @@ int fz_resolve_link_target_z(fz_context *ctx, fz_document *doc, const char *uri,
   return page;
 }
 
+static void walk_outline(fz_outline *node, int depth, void *userdata, fz_outline_visit_fn cb) {
+  fz_outline *o = node;
+  while (o) {
+    cb(userdata, o->title ? o->title : "", depth, o->uri ? o->uri : "");
+    if (o->down && depth < 32) walk_outline(o->down, depth + 1, userdata, cb);
+    o = o->next;
+  }
+}
+
+void fz_walk_outline_z(fz_context *ctx, fz_document *doc, void *userdata, fz_outline_visit_fn cb) {
+  fz_outline *root = NULL;
+  fz_try(ctx) { root = fz_load_outline(ctx, doc); }
+  fz_catch(ctx) { return; }
+  if (!root) return;
+  walk_outline(root, 0, userdata, cb);
+  fz_drop_outline(ctx, root);
+}
+
 int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out) {
   int ok = 0;
   fz_device *dev = NULL;

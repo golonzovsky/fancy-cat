@@ -156,6 +156,10 @@ pub fn loadLinks(self: *Self, allocator: std.mem.Allocator, page_number: u16) ![
     return self.pdf_handler.loadLinks(allocator, page_number);
 }
 
+pub fn loadOutline(self: *Self, allocator: std.mem.Allocator) ![]PdfHandler.OutlineEntry {
+    return self.pdf_handler.loadOutline(allocator);
+}
+
 pub fn resetDefaultZoom(self: *Self) void {
     self.pdf_handler.resetDefaultZoom();
 }
