@@ -89,6 +89,7 @@ typedef struct {
   int in_bold;
   int in_italic;
   int in_mono;
+  int in_code_block;
   int last_was_space;
 } md_state;
 
@@ -207,6 +208,13 @@ static void md_close_styles(fz_context *ctx, md_state *st) {
   if (st->in_bold) { fz_write_string(ctx, st->out, "**"); st->in_bold = 0; }
 }
 
+// Like md_close_styles but leaves monospace open — `` `a b` `` is valid
+// markdown and merging contiguous mono runs avoids per-word `` `foo` `bar` ``.
+static void md_close_emph_styles(fz_context *ctx, md_state *st) {
+  if (st->in_italic) { fz_write_byte(ctx, st->out, '*'); st->in_italic = 0; }
+  if (st->in_bold) { fz_write_string(ctx, st->out, "**"); st->in_bold = 0; }
+}
+
 static void md_sync_styles(fz_context *ctx, md_state *st, int bold, int italic, int mono) {
   // Close inner-first if turning off; open outer-first when turning on.
   if (st->in_mono && !mono) { fz_write_byte(ctx, st->out, '`'); st->in_mono = 0; }
@@ -215,6 +223,46 @@ static void md_sync_styles(fz_context *ctx, md_state *st, int bold, int italic, 
   if (!st->in_bold && bold) { fz_write_string(ctx, st->out, "**"); st->in_bold = 1; }
   if (!st->in_italic && italic) { fz_write_byte(ctx, st->out, '*'); st->in_italic = 1; }
   if (!st->in_mono && mono) { fz_write_byte(ctx, st->out, '`'); st->in_mono = 1; }
+}
+
+static int md_block_is_all_mono(fz_context *ctx, fz_stext_block *b) {
+  int saw_any = 0;
+  for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
+    for (fz_stext_char *c = l->first_char; c; c = c->next) {
+      if (c->c <= 32 || c->c == 0xFFFD || c->c == 0x00AD) continue;
+      saw_any = 1;
+      if (!md_is_mono(ctx, c)) return 0;
+    }
+  }
+  return saw_any;
+}
+
+static void md_open_code_block(fz_context *ctx, md_state *st) {
+  if (st->in_code_block) return;
+  fz_write_string(ctx, st->out, "```\n");
+  st->in_code_block = 1;
+  st->last_was_space = 1;
+}
+
+static void md_close_code_block(fz_context *ctx, md_state *st) {
+  if (!st->in_code_block) return;
+  fz_write_string(ctx, st->out, "```\n\n");
+  st->in_code_block = 0;
+  st->last_was_space = 1;
+}
+
+static void md_emit_code_block(fz_context *ctx, md_state *st, fz_stext_block *b) {
+  for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
+    for (fz_stext_char *c = l->first_char; c; c = c->next) {
+      if (c->c == 0xFFFD || c->c == 0x00AD) continue;
+      if (c->c <= 32) {
+        fz_write_byte(ctx, st->out, ' ');
+        continue;
+      }
+      fz_write_rune(ctx, st->out, c->c);
+    }
+    fz_write_byte(ctx, st->out, '\n');
+  }
 }
 
 static void md_emit_text_block(fz_context *ctx, md_state *st, fz_stext_block *b) {
@@ -236,7 +284,7 @@ static void md_emit_text_block(fz_context *ctx, md_state *st, fz_stext_block *b)
     for (fz_stext_char *c = l->first_char; c; c = c->next) {
       if (c->c == 0xFFFD || c->c == 0x00AD) continue; // replacement char + soft hyphen
       if (c->c <= 32) {
-        md_close_styles(ctx, st);
+        md_close_emph_styles(ctx, st);
         md_emit_space(ctx, st);
         continue;
       }
@@ -279,6 +327,7 @@ static void md_flush_pending(fz_context *ctx, md_state *st) {
   // copyable text and skip the raster — point of the editor flow is to copy
   // text. Pure diagrams with sparse labels (< 25% text coverage) still render.
   if (md_text_coverage(st, r) > 0.25f) return;
+  md_close_code_block(ctx, st);
 
   st->image_counter++;
   char img_path[1024];
@@ -317,7 +366,13 @@ static void md_walk(fz_context *ctx, md_state *st, fz_stext_block *blocks) {
     if (b->type == FZ_STEXT_BLOCK_TEXT) {
       if (page_h > 0 && b->bbox.y0 >= footer_y) continue;
       md_flush_pending(ctx, st);
-      md_emit_text_block(ctx, st, b);
+      if (md_block_is_all_mono(ctx, b)) {
+        md_open_code_block(ctx, st);
+        md_emit_code_block(ctx, st, b);
+      } else {
+        md_close_code_block(ctx, st);
+        md_emit_text_block(ctx, st, b);
+      }
     } else if (b->type == FZ_STEXT_BLOCK_STRUCT && b->u.s.down) {
       md_walk(ctx, st, b->u.s.down->first_block);
     } else if (b->type == FZ_STEXT_BLOCK_IMAGE || b->type == FZ_STEXT_BLOCK_VECTOR) {
@@ -390,6 +445,7 @@ int fz_write_pages_text_z(fz_context *ctx, fz_document *doc, int start_page, int
         st.in_mono = 0;
         st.pending_active = 0;
         st.text_bbox_count = 0;
+        md_close_code_block(ctx, &st);
         md_collect_text_bboxes(stext->first_block, st.text_bboxes, &st.text_bbox_count, MD_MAX_TEXT_BBOXES);
         md_walk(ctx, &st, stext->first_block);
       }
@@ -402,6 +458,7 @@ int fz_write_pages_text_z(fz_context *ctx, fz_document *doc, int start_page, int
       }
     }
 
+    md_close_code_block(ctx, &st);
     if (on_progress) on_progress(progress_userdata, total, total);
     fz_close_output(ctx, out);
     ok = 1;
