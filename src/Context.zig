@@ -724,6 +724,14 @@ pub const Context = struct {
         _ = child.wait(self.io) catch {};
 
         std.Io.Dir.deleteFileAbsolute(self.io, path) catch {};
+        // Also clean up any diagram PNGs the extractor emitted (`<base>-imgN.png`).
+        const base = if (std.mem.endsWith(u8, path, ".md")) path[0 .. path.len - 3] else path;
+        var i: u8 = 1;
+        while (i <= 50) : (i += 1) {
+            const img = std.fmt.allocPrint(self.allocator, "{s}-img{d}.png", .{ base, i }) catch break;
+            defer self.allocator.free(img);
+            std.Io.Dir.deleteFileAbsolute(self.io, img) catch break;
+        }
 
         if (self.loop) |loop| try loop.start();
 

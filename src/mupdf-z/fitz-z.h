@@ -15,4 +15,6 @@ int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size);
 // Computes the tight bounding box of all drawn content on a page. Returns 1 on success.
 int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out);
 // Extracts the text of a page via mupdf's stext device and writes it to `path`. Returns 1 on success.
-int fz_write_page_text_z(fz_context *ctx, fz_document *doc, int page_num, const char *path);
+// Diagrams alongside the markdown are rasterized at `scale` (pixels per PDF point) and tinted with
+// the given black/white colors. Pass (0x000000, 0xffffff) for an identity tint.
+int fz_write_page_text_z(fz_context *ctx, fz_document *doc, int page_num, const char *path, float scale, int black, int white);
