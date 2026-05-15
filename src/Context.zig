@@ -321,6 +321,10 @@ pub const Context = struct {
             .key_press => |key| try self.handleKeyStroke(key),
             .mouse => |mouse| {
                 self.mouse = mouse;
+                if (self.current_mode == .toc) {
+                    self.current_mode.toc.handleMouse(mouse);
+                    return;
+                }
                 if (self.current_mode == .view and mouse.type == .press) {
                     const step = self.config.general.scroll_step / 4.0;
                     const zoom_mod = mouse.mods.ctrl or mouse.mods.alt;
