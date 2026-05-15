@@ -265,6 +265,18 @@ static void md_emit_code_block(fz_context *ctx, md_state *st, fz_stext_block *b)
   }
 }
 
+static void md_emit_heading_line(fz_context *ctx, md_state *st, fz_stext_line *l) {
+  // No styling markers inside a heading — the `#`/`##`/`###` prefix already
+  // implies emphasis, and emitting per-word `**` looks like garbage.
+  st->last_was_space = 1;
+  for (fz_stext_char *c = l->first_char; c; c = c->next) {
+    if (c->c == 0xFFFD || c->c == 0x00AD) continue;
+    if (c->c <= 32) { md_emit_space(ctx, st); continue; }
+    fz_write_rune(ctx, st->out, c->c);
+    st->last_was_space = 0;
+  }
+}
+
 static void md_emit_text_block(fz_context *ctx, md_state *st, fz_stext_block *b) {
   if (!b->u.t.first_line) return;
 
@@ -272,15 +284,24 @@ static void md_emit_text_block(fz_context *ctx, md_state *st, fz_stext_block *b)
   for (fz_stext_char *c = b->u.t.first_line->first_char; c; c = c->next) {
     if (c->c > 32 && c->size > max_size) max_size = c->size;
   }
+  fz_stext_line *body_start = b->u.t.first_line;
   if (st->body_size > 0) {
     float r = max_size / st->body_size;
-    if (r >= 1.7f) fz_write_string(ctx, st->out, "# ");
-    else if (r >= 1.4f) fz_write_string(ctx, st->out, "## ");
-    else if (r >= 1.2f) fz_write_string(ctx, st->out, "### ");
+    const char *prefix = NULL;
+    if (r >= 1.7f) prefix = "# ";
+    else if (r >= 1.4f) prefix = "## ";
+    else if (r >= 1.2f) prefix = "### ";
+    if (prefix) {
+      fz_write_string(ctx, st->out, prefix);
+      md_emit_heading_line(ctx, st, b->u.t.first_line);
+      fz_write_string(ctx, st->out, "\n\n");
+      body_start = b->u.t.first_line->next;
+      if (!body_start) return; // heading-only block
+    }
   }
 
   st->last_was_space = 1; // suppress leading/duplicate spaces
-  for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
+  for (fz_stext_line *l = body_start; l; l = l->next) {
     for (fz_stext_char *c = l->first_char; c; c = c->next) {
       if (c->c == 0xFFFD || c->c == 0x00AD) continue; // replacement char + soft hyphen
       if (c->c <= 32) {
