@@ -240,8 +240,19 @@ static void md_emit_text_block(fz_context *ctx, md_state *st, fz_stext_block *b)
         md_emit_space(ctx, st);
         continue;
       }
+      // Normalize TeX-style quotes (`` -> ", '' -> ') — raw backticks would
+      // collide with our monospace markers and confuse markdown rendering.
+      int rune = c->c;
+      if ((rune == '`' || rune == '\'') && c->next && c->next->c == rune) {
+        md_sync_styles(ctx, st, 0, 0, 0);
+        fz_write_byte(ctx, st->out, '"');
+        st->last_was_space = 0;
+        c = c->next;
+        continue;
+      }
+      if (rune == '`') rune = '\''; // lone backtick → apostrophe
       md_sync_styles(ctx, st, md_is_bold(ctx, c), md_is_italic(ctx, c), md_is_mono(ctx, c));
-      fz_write_rune(ctx, st->out, c->c);
+      fz_write_rune(ctx, st->out, rune);
       st->last_was_space = 0;
     }
     md_close_styles(ctx, st);

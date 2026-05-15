@@ -661,6 +661,10 @@ pub const Context = struct {
                 m.page = page;
                 m.scroll_x = sx;
                 m.scroll_y = sy;
+                if (m.comment.len > 0) {
+                    self.allocator.free(m.comment);
+                    m.comment = "";
+                }
                 return;
             }
         }

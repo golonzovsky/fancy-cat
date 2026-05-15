@@ -11,6 +11,7 @@ visible: std.ArrayList(usize),
 expanded: std.AutoHashMap(usize, void),
 cursor: usize,
 top: usize,
+manual_top: bool = false,
 draw_arena: std.heap.ArenaAllocator,
 
 pub fn init(context: *Context) Self {
@@ -92,6 +93,8 @@ fn setCursorNearCurrentPage(self: *Self) void {
 }
 
 pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
+    // Any key resumes cursor-follows-view auto-scroll (wheel-only sticks).
+    self.manual_top = false;
     if (key.matches(km.exit_command_mode.codepoint, km.exit_command_mode.mods) or
         key.matches(km.toc_mode.codepoint, km.toc_mode.mods))
     {
@@ -145,12 +148,16 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
 pub fn handleMouse(self: *Self, mouse: vaxis.Mouse) void {
     if (mouse.type != .press) return;
     if (self.visible.items.len == 0) return;
+    const step: usize = 3;
     switch (mouse.button) {
-        .wheel_up => if (self.cursor > 0) {
-            self.cursor -= 1;
+        .wheel_up => {
+            self.top -|= step;
+            self.manual_top = true;
         },
-        .wheel_down => if (self.cursor + 1 < self.visible.items.len) {
-            self.cursor += 1;
+        .wheel_down => {
+            const max_top = self.visible.items.len -| 1;
+            self.top = @min(self.top + step, max_top);
+            self.manual_top = true;
         },
         else => {},
     }
@@ -240,8 +247,10 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     const list_h: usize = if (h > 2) @intCast(h - 2) else 0;
     if (list_h == 0) return;
 
-    if (self.cursor < self.top) self.top = self.cursor;
-    if (self.cursor >= self.top + list_h) self.top = self.cursor + 1 - list_h;
+    if (!self.manual_top) {
+        if (self.cursor < self.top) self.top = self.cursor;
+        if (self.cursor >= self.top + list_h) self.top = self.cursor + 1 - list_h;
+    }
 
     _ = self.draw_arena.reset(.retain_capacity);
     const a = self.draw_arena.allocator();
