@@ -14,8 +14,8 @@ const DependencyType = struct {
 
 const DependenciesType = struct {
     vaxis: DependencyType,
-    fzwatch: DependencyType,
     fastb64z: DependencyType,
+    fzwatch: DependencyType,
 };
 
 const MetadataType = struct {
@@ -29,16 +29,15 @@ const MetadataType = struct {
 
 const metadata: MetadataType = @import("metadata");
 
-pub fn main() !void {
-    const args = try std.process.argsAlloc(std.heap.page_allocator);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+pub fn main(init: std.process.Init) !void {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
     if (args.len == 2 and (std.mem.eql(u8, args[1], "--version") or std.mem.eql(u8, args[1], "-v"))) {
@@ -53,16 +52,7 @@ pub fn main() !void {
         return;
     }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) {
-            std.log.err("memory leak", .{});
-        }
-    }
-    const allocator = gpa.allocator();
-
-    var app = try Context.init(allocator, args);
+    var app = try Context.init(init.gpa, init.io, init.environ_map, args);
     defer app.deinit();
 
     try app.run();

@@ -12,7 +12,24 @@ const c = @cImport({
     @cInclude("mupdf/pdf.h");
 });
 
+const time_compat = struct {
+    pub const timespec = extern struct { tv_sec: c_long, tv_nsec: c_long };
+    pub extern "c" fn clock_gettime(clk: c_int, ts: *timespec) c_int;
+    pub extern "c" fn nanosleep(req: *const timespec, rem: ?*timespec) c_int;
+    const CLOCK_MONOTONIC: c_int = 6;
+    pub fn milliTimestamp() i64 {
+        var ts: timespec = undefined;
+        _ = clock_gettime(CLOCK_MONOTONIC, &ts);
+        return @as(i64, ts.tv_sec) * std.time.ms_per_s + @divTrunc(@as(i64, ts.tv_nsec), std.time.ns_per_ms);
+    }
+    pub fn sleep(ns: u64) void {
+        var req = timespec{ .tv_sec = @intCast(ns / std.time.ns_per_s), .tv_nsec = @intCast(ns % std.time.ns_per_s) };
+        _ = nanosleep(&req, null);
+    }
+};
+
 allocator: std.mem.Allocator,
+io: std.Io,
 ctx: [*c]c.fz_context,
 doc: [*c]c.fz_document,
 total_pages: u16,
@@ -34,6 +51,7 @@ config: *Config,
 
 pub fn init(
     allocator: std.mem.Allocator,
+    io: std.Io,
     path: []const u8,
     config: *Config,
 ) !Self {
@@ -58,6 +76,7 @@ pub fn init(
 
     return .{
         .allocator = allocator,
+        .io = io,
         .ctx = ctx,
         .doc = doc,
         .total_pages = total_pages,
@@ -87,10 +106,10 @@ pub fn deinit(self: *Self) void {
 pub fn reloadDocument(self: *Self) !void {
     const retry_delay = @as(u64, @intFromFloat(self.config.general.retry_delay * @as(f64, std.time.ns_per_s)));
     const timeout = @as(i64, @intFromFloat(self.config.general.timeout * @as(f64, std.time.ms_per_s)));
-    const start_time = std.time.milliTimestamp();
+    const start_time = time_compat.milliTimestamp();
 
     while (true) {
-        const now = std.time.milliTimestamp();
+        const now = time_compat.milliTimestamp();
         if (now - start_time > timeout) {
             std.debug.print("Failed to reload document\n", .{});
             return types.DocumentError.FailedToOpenDocument;
@@ -102,14 +121,14 @@ pub fn reloadDocument(self: *Self) !void {
         }
 
         const doc = c.fz_open_document_z(self.ctx, self.path.ptr) orelse {
-            std.Thread.sleep(retry_delay);
+            time_compat.sleep(retry_delay);
             continue; // try again
         };
         self.doc = doc;
 
         const page_count = c.fz_count_pages_z(self.ctx, self.doc);
         if (page_count == 0) {
-            std.Thread.sleep(retry_delay);
+            time_compat.sleep(retry_delay);
             continue; // try again
         }
         self.total_pages = @as(u16, @intCast(page_count));
@@ -148,17 +167,17 @@ pub fn renderPage(
 ) !types.EncodedImage {
     const retry_delay = @as(u64, @intFromFloat(self.config.general.retry_delay * @as(f64, std.time.ns_per_s)));
     const timeout = @as(i64, @intFromFloat(self.config.general.timeout * @as(f64, std.time.ms_per_s)));
-    const start_time = std.time.milliTimestamp();
+    const start_time = time_compat.milliTimestamp();
 
     while (true) {
-        const now = std.time.milliTimestamp();
+        const now = time_compat.milliTimestamp();
         if (now - start_time > timeout) {
             std.debug.print("Failed to render page\n", .{});
             return types.DocumentError.FailedToRenderPage;
         }
 
         const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number))) orelse {
-            std.Thread.sleep(retry_delay);
+            time_compat.sleep(retry_delay);
             continue;
         };
         defer c.fz_drop_page(self.ctx, page);
@@ -385,7 +404,7 @@ fn outlineVisitCb(userdata: ?*anyopaque, title: [*c]const u8, depth: c_int, uri:
 }
 
 pub fn loadOutline(self: *Self, allocator: std.mem.Allocator) ![]OutlineEntry {
-    var out = std.ArrayList(OutlineEntry){};
+    var out: std.ArrayList(OutlineEntry) = .empty;
     errdefer {
         for (out.items) |e| allocator.free(e.title);
         out.deinit(allocator);
@@ -397,7 +416,7 @@ pub fn loadOutline(self: *Self, allocator: std.mem.Allocator) ![]OutlineEntry {
 }
 
 pub fn loadLinks(self: *Self, allocator: std.mem.Allocator, page_number: u16) ![]PageLink {
-    var out = std.ArrayList(PageLink){};
+    var out: std.ArrayList(PageLink) = .empty;
     errdefer {
         for (out.items) |item| switch (item.target) {
             .uri => |u| allocator.free(u),
@@ -440,15 +459,11 @@ pub fn getDocumentKey(self: *Self, allocator: std.mem.Allocator) ![]u8 {
         return std.fmt.allocPrint(allocator, "pdf-id:{s}", .{id_buf[0..@as(usize, @intCast(id_len))]});
     }
 
-    if (std.fs.cwd().openFile(self.path, .{})) |file| {
-        defer file.close();
-        const max_bytes: usize = 1024 * 1024;
-        const buf = allocator.alloc(u8, max_bytes) catch return std.fmt.allocPrint(allocator, "path:{s}", .{self.path});
+    if (std.Io.Dir.cwd().readFileAlloc(self.io, self.path, allocator, .limited(1024 * 1024))) |buf| {
         defer allocator.free(buf);
-        const read = file.readAll(buf) catch 0;
-        if (read > 0) {
+        if (buf.len > 0) {
             var digest: [32]u8 = undefined;
-            std.crypto.hash.sha2.Sha256.hash(buf[0..read], &digest, .{});
+            std.crypto.hash.sha2.Sha256.hash(buf[0..@min(buf.len, 1024 * 1024)], &digest, .{});
             var hex: [64]u8 = undefined;
             const hex_chars = "0123456789abcdef";
             for (digest, 0..) |b, i| {

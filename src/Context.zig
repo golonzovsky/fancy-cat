@@ -51,6 +51,8 @@ pub const Context = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
     arena: std.heap.ArenaAllocator,
     should_quit: bool,
     tty: vaxis.Tty,
@@ -83,7 +85,7 @@ pub const Context = struct {
     marks: std.ArrayList(Positions.Mark),
     pending_op: ?enum { set_mark, jump_mark },
 
-    pub fn init(allocator: std.mem.Allocator, args: [][:0]u8) !Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !Self {
         const path = args[1];
         const initial_page = if (args.len == 3)
             try std.fmt.parseInt(u16, args[2], 10)
@@ -92,16 +94,16 @@ pub const Context = struct {
 
         const config = try allocator.create(Config);
         errdefer allocator.destroy(config);
-        config.* = Config.init(allocator);
+        config.* = Config.init(allocator, io, env);
         errdefer config.deinit();
 
-        var document_handler = try DocumentHandler.init(allocator, path, initial_page, config);
+        var document_handler = try DocumentHandler.init(allocator, io, path, initial_page, config);
         errdefer document_handler.deinit();
 
         const doc_key = try document_handler.getDocumentKey(allocator);
         errdefer allocator.free(doc_key);
 
-        var positions = Positions.init(allocator, config, doc_key);
+        var positions = Positions.init(allocator, io, env, config, doc_key);
         errdefer positions.deinit();
         if (initial_page == null) {
             if (positions.getSavedPosition()) |pos| {
@@ -128,14 +130,16 @@ pub const Context = struct {
             if (watcher) |*w| try w.addFile(path);
         }
 
-        const vx = try vaxis.init(allocator, .{});
+        const vx = try vaxis.init(io, allocator, env, .{});
         const buf = try allocator.alloc(u8, 4096);
-        const tty = try vaxis.Tty.init(buf);
+        const tty = try vaxis.Tty.init(io, buf);
         const reload_indicator_timer = ReloadIndicatorTimer.init(config);
-        const history = History.init(allocator, config);
+        const history = History.init(allocator, io, env, config);
 
         return .{
             .allocator = allocator,
+            .io = io,
+            .env = env,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .should_quit = false,
             .tty = tty,
@@ -162,8 +166,8 @@ pub const Context = struct {
             .visible_pages_len = 0,
             .last_pix_per_col = 1,
             .last_pix_per_row = 1,
-            .jump_back = .{},
-            .jump_forward = .{},
+            .jump_back = .empty,
+            .jump_forward = .empty,
             .lock_horizontal_scroll = restored_hlock,
             .marks = marks,
             .pending_op = null,
@@ -220,7 +224,7 @@ pub const Context = struct {
         switch (event) {
             .modified => {
                 const loop = @as(*vaxis.Loop(Event), @ptrCast(@alignCast(context.?)));
-                loop.postEvent(Event.file_changed);
+                loop.postEvent(Event.file_changed) catch {};
             },
         }
     }
@@ -232,16 +236,12 @@ pub const Context = struct {
     pub fn run(self: *Self) !void {
         self.current_mode = .{ .view = ViewMode.init(self) };
 
-        var loop: vaxis.Loop(Event) = .{
-            .tty = &self.tty,
-            .vaxis = &self.vx,
-        };
+        var loop: vaxis.Loop(Event) = .init(self.io, &self.tty, &self.vx);
 
-        try loop.init();
         try loop.start();
         defer loop.stop();
         try self.vx.enterAltScreen(self.tty.writer());
-        try self.vx.queryTerminal(self.tty.writer(), 1 * std.time.ns_per_s);
+        try self.vx.queryTerminal(self.tty.writer(), std.Io.Duration.fromSeconds(1));
         try self.vx.setMouseMode(self.tty.writer(), true);
 
         if (self.config.file_monitor.enabled) {
@@ -262,9 +262,9 @@ pub const Context = struct {
         }
 
         while (!self.should_quit) {
-            loop.pollEvent();
+            try loop.pollEvent();
 
-            while (loop.tryEvent()) |event| {
+            while (try loop.tryEvent()) |event| {
                 try self.update(event);
             }
 
@@ -564,8 +564,9 @@ pub const Context = struct {
     }
 
     pub fn handleLeftClick(self: *Self, mouse: vaxis.Mouse) !void {
-        const click_pix_x: u32 = @as(u32, mouse.col) * @as(u32, self.last_pix_per_col) + mouse.xoffset;
-        const click_pix_y: u32 = @as(u32, mouse.row) * @as(u32, self.last_pix_per_row) + mouse.yoffset;
+        if (mouse.col < 0 or mouse.row < 0) return;
+        const click_pix_x: u32 = @as(u32, @intCast(mouse.col)) * @as(u32, self.last_pix_per_col) + mouse.xoffset;
+        const click_pix_y: u32 = @as(u32, @intCast(mouse.row)) * @as(u32, self.last_pix_per_row) + mouse.yoffset;
         const zoom = self.document_handler.getActiveZoom();
         if (zoom == 0) return;
 
@@ -595,11 +596,12 @@ pub const Context = struct {
             },
             .uri => |uri| {
                 defer self.allocator.free(uri);
-                var child = std.process.Child.init(&.{ "open", uri }, self.allocator);
-                child.stdin_behavior = .Ignore;
-                child.stdout_behavior = .Ignore;
-                child.stderr_behavior = .Ignore;
-                _ = child.spawn() catch {};
+                _ = std.process.spawn(self.io, .{
+                    .argv = &.{ "open", uri },
+                    .stdin = .ignore,
+                    .stdout = .ignore,
+                    .stderr = .ignore,
+                }) catch {};
             },
         }
     }
@@ -803,17 +805,18 @@ pub const Context = struct {
         var text = item.text;
 
         if (std.mem.eql(u8, text, Config.StatusBar.PATH)) {
-            const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+            const cwd_dir = std.Io.Dir.cwd();
+            const cwd = try cwd_dir.realPathFileAlloc(self.io, ".", allocator);
             defer allocator.free(cwd);
 
-            const full_path = try std.fs.cwd().realpathAlloc(allocator, self.document_handler.getPath());
+            const full_path = try cwd_dir.realPathFileAlloc(self.io, self.document_handler.getPath(), allocator);
             defer allocator.free(full_path);
 
             if (std.mem.startsWith(u8, full_path, cwd)) {
                 var path = full_path[cwd.len..];
                 if (path.len > 0 and path[0] == '/') path = path[1..];
-                text = try std.fmt.allocPrint(allocator, "{s}", .{path}); // trim cwd
-            } else if (std.posix.getenv("HOME")) |home| {
+                text = try std.fmt.allocPrint(allocator, "{s}", .{path});
+            } else if (self.env.get("HOME")) |home| {
                 if (std.mem.startsWith(u8, full_path, home)) {
                     var path = full_path[home.len..];
                     if (path.len > 0 and path[0] == '/') path = path[1..];

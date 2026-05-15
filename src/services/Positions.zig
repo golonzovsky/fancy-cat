@@ -22,15 +22,17 @@ pub const Mark = struct {
 };
 
 allocator: std.mem.Allocator,
+io: std.Io,
 config: *Config,
 doc_path: []const u8,
 file_path: []u8,
 all: std.json.Parsed(std.json.Value),
 have_data: bool,
 
-pub fn init(allocator: std.mem.Allocator, config: *Config, doc_path: []const u8) Self {
+pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, config: *Config, doc_path: []const u8) Self {
     var self = Self{
         .allocator = allocator,
+        .io = io,
         .config = config,
         .doc_path = doc_path,
         .file_path = "",
@@ -38,18 +40,16 @@ pub fn init(allocator: std.mem.Allocator, config: *Config, doc_path: []const u8)
         .have_data = false,
     };
 
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return self;
-    defer allocator.free(home);
+    const home = env.get("HOME") orelse return self;
 
     if (!config.legacy_path) {
-        const xdg_state_home = std.process.getEnvVarOwned(allocator, "XDG_STATE_HOME") catch null;
-        if (xdg_state_home) |x| {
+        if (env.get("XDG_STATE_HOME")) |x| {
             self.file_path = std.fmt.allocPrint(allocator, "{s}/fancy-cat/positions.json", .{x}) catch return self;
-            allocator.free(x);
         } else self.file_path = std.fmt.allocPrint(allocator, "{s}/.local/state/fancy-cat/positions.json", .{home}) catch return self;
     } else self.file_path = std.fmt.allocPrint(allocator, "{s}/.fancy-cat_positions", .{home}) catch return self;
 
-    const content = std.fs.cwd().readFileAlloc(allocator, self.file_path, 1024 * 1024) catch return self;
+    const cwd = std.Io.Dir.cwd();
+    const content = cwd.readFileAlloc(io, self.file_path, allocator, .limited(1024 * 1024)) catch return self;
     defer allocator.free(content);
 
     self.all = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return self;
@@ -102,7 +102,7 @@ pub fn getSavedPosition(self: *Self) ?Position {
 }
 
 pub fn loadMarks(self: *Self, allocator: std.mem.Allocator) std.ArrayList(Mark) {
-    var out = std.ArrayList(Mark){};
+    var out: std.ArrayList(Mark) = .empty;
     if (!self.have_data) return out;
     const entry = self.all.value.object.get(self.doc_path) orelse return out;
     if (entry != .object) return out;
@@ -135,51 +135,55 @@ pub fn loadMarks(self: *Self, allocator: std.mem.Allocator) std.ArrayList(Mark) 
 pub fn save(self: *Self, pos: Position, marks: []const Mark) void {
     if (self.file_path.len == 0) return;
 
-    if (std.fs.path.dirname(self.file_path)) |dir| std.fs.cwd().makePath(dir) catch {};
+    const cwd = std.Io.Dir.cwd();
+    if (std.fs.path.dirname(self.file_path)) |dir| cwd.createDirPath(self.io, dir) catch {};
 
     var arena = std.heap.ArenaAllocator.init(self.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    var root = std.json.ObjectMap.init(a);
+    var root = std.json.ObjectMap.empty;
     if (self.have_data) {
         var it = self.all.value.object.iterator();
         while (it.next()) |kv| {
             if (std.mem.eql(u8, kv.key_ptr.*, self.doc_path)) continue;
-            root.put(kv.key_ptr.*, kv.value_ptr.*) catch return;
+            root.put(a, kv.key_ptr.*, kv.value_ptr.*) catch return;
         }
     }
 
-    var entry = std.json.ObjectMap.init(a);
-    entry.put("page", .{ .integer = @as(i64, pos.page) }) catch return;
-    entry.put("scroll_x", .{ .integer = @as(i64, pos.scroll_x) }) catch return;
-    entry.put("scroll_y", .{ .integer = @as(i64, pos.scroll_y) }) catch return;
-    entry.put("zoom", .{ .float = pos.zoom }) catch return;
-    entry.put("odd_shift_x", .{ .integer = @as(i64, pos.odd_shift_x) }) catch return;
-    entry.put("colorize", .{ .bool = pos.colorize }) catch return;
-    entry.put("crop", .{ .bool = pos.crop }) catch return;
-    entry.put("hlock", .{ .bool = pos.hlock }) catch return;
+    var entry = std.json.ObjectMap.empty;
+    entry.put(a, "page", .{ .integer = @as(i64, pos.page) }) catch return;
+    entry.put(a, "scroll_x", .{ .integer = @as(i64, pos.scroll_x) }) catch return;
+    entry.put(a, "scroll_y", .{ .integer = @as(i64, pos.scroll_y) }) catch return;
+    entry.put(a, "zoom", .{ .float = pos.zoom }) catch return;
+    entry.put(a, "odd_shift_x", .{ .integer = @as(i64, pos.odd_shift_x) }) catch return;
+    entry.put(a, "colorize", .{ .bool = pos.colorize }) catch return;
+    entry.put(a, "crop", .{ .bool = pos.crop }) catch return;
+    entry.put(a, "hlock", .{ .bool = pos.hlock }) catch return;
 
     if (marks.len > 0) {
         var arr = std.json.Array.init(a);
         for (marks) |m| {
-            var obj = std.json.ObjectMap.init(a);
+            var obj = std.json.ObjectMap.empty;
             const letter_str = a.alloc(u8, 1) catch return;
             letter_str[0] = m.letter;
-            obj.put("letter", .{ .string = letter_str }) catch return;
-            obj.put("page", .{ .integer = @as(i64, m.page) }) catch return;
-            obj.put("scroll_x", .{ .integer = @as(i64, m.scroll_x) }) catch return;
-            obj.put("scroll_y", .{ .integer = @as(i64, m.scroll_y) }) catch return;
-            obj.put("comment", .{ .string = m.comment }) catch return;
+            obj.put(a, "letter", .{ .string = letter_str }) catch return;
+            obj.put(a, "page", .{ .integer = @as(i64, m.page) }) catch return;
+            obj.put(a, "scroll_x", .{ .integer = @as(i64, m.scroll_x) }) catch return;
+            obj.put(a, "scroll_y", .{ .integer = @as(i64, m.scroll_y) }) catch return;
+            obj.put(a, "comment", .{ .string = m.comment }) catch return;
             arr.append(.{ .object = obj }) catch return;
         }
-        entry.put("marks", .{ .array = arr }) catch return;
+        entry.put(a, "marks", .{ .array = arr }) catch return;
     }
 
-    root.put(self.doc_path, .{ .object = entry }) catch return;
+    root.put(a, self.doc_path, .{ .object = entry }) catch return;
 
     const json_str = std.json.Stringify.valueAlloc(a, std.json.Value{ .object = root }, .{ .whitespace = .indent_2 }) catch return;
-    const file = std.fs.createFileAbsolute(self.file_path, .{}) catch return;
-    defer file.close();
-    file.writeAll(json_str) catch return;
+    var file = cwd.createFile(self.io, self.file_path, .{}) catch return;
+    defer file.close(self.io);
+    var buf: [4096]u8 = undefined;
+    var fw = file.writer(self.io, &buf);
+    fw.interface.writeAll(json_str) catch return;
+    fw.interface.flush() catch return;
 }

@@ -20,7 +20,7 @@ pub fn init(context: *Context) Self {
     var self = Self{
         .context = context,
         .entries = entries,
-        .visible = .{},
+        .visible = .empty,
         .expanded = std.AutoHashMap(usize, void).init(context.allocator),
         .cursor = 0,
         .top = 0,

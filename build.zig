@@ -1,25 +1,25 @@
 const std = @import("std");
 
-fn addMupdfStatic(exe: *std.Build.Step.Compile, b: *std.Build, prefix: []const u8) void {
-    exe.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{prefix}) });
-    exe.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{prefix}) });
+fn addMupdfStatic(mod: *std.Build.Module, b: *std.Build, prefix: []const u8) void {
+    mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{prefix}) });
+    mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{prefix}) });
 
-    exe.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libmupdf.a", .{prefix}) });
-    exe.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libmupdf-third.a", .{prefix}) });
+    mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libmupdf.a", .{prefix}) });
+    mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libmupdf-third.a", .{prefix}) });
 
-    exe.linkLibC();
+    mod.link_libc = true;
 }
 
-fn addMupdfDynamic(exe: *std.Build.Step.Compile, target: std.Target) void {
+fn addMupdfDynamic(mod: *std.Build.Module, target: std.Target) void {
     if (target.os.tag == .macos and target.cpu.arch == .aarch64) {
-        exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-        exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+        mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
     } else if (target.os.tag == .macos and target.cpu.arch == .x86_64) {
-        exe.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
-        exe.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+        mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+        mod.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
     } else if (target.os.tag == .linux) {
-        exe.addIncludePath(.{ .cwd_relative = "/home/linuxbrew/.linuxbrew/include" });
-        exe.addLibraryPath(.{ .cwd_relative = "/home/linuxbrew/.linuxbrew/lib" });
+        mod.addIncludePath(.{ .cwd_relative = "/home/linuxbrew/.linuxbrew/include" });
+        mod.addLibraryPath(.{ .cwd_relative = "/home/linuxbrew/.linuxbrew/lib" });
 
         const linux_libs = [_][]const u8{
             "mupdf-third", "harfbuzz",
@@ -27,11 +27,11 @@ fn addMupdfDynamic(exe: *std.Build.Step.Compile, target: std.Target) void {
             "jpeg",        "openjp2",
             "gumbo",       "mujs",
         };
-        for (linux_libs) |lib| exe.linkSystemLibrary(lib);
+        for (linux_libs) |lib| mod.linkSystemLibrary(lib, .{});
     }
-    exe.linkSystemLibrary("mupdf");
-    exe.linkSystemLibrary("z");
-    exe.linkLibC();
+    mod.linkSystemLibrary("mupdf", .{});
+    mod.linkSystemLibrary("z", .{});
+    mod.link_libc = true;
 }
 
 pub fn build(b: *std.Build) void {
@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) void {
     const prefix = b.fmt("{s}/mupdf-out", .{root});
     const location = prefix;
 
-    std.fs.cwd().access("./deps/mupdf/Makefile", .{}) catch |err| {
+    b.build_root.handle.access(b.graph.io, "deps/mupdf/Makefile", .{}) catch |err| {
         if (err == error.FileNotFound) {
             useVendorMupdf = false;
         } else {
@@ -57,12 +57,11 @@ pub fn build(b: *std.Build) void {
 
     make_args.append(allocator, "make") catch unreachable;
 
-    // use as many cores as possible by default (like zig) I dont know how to check for j<N> arg
     const cpu_count = std.Thread.getCpuCount() catch 1;
     make_args.append(allocator, b.fmt("-j{d}", .{cpu_count})) catch unreachable;
 
     make_args.append(allocator, "-C") catch unreachable;
-    make_args.append(allocator, "deps/mupdf") catch unreachable;
+    make_args.append(allocator, b.fmt("{s}/deps/mupdf", .{root})) catch unreachable;
 
     if (target.result.os.tag == .linux) {
         make_args.append(allocator, "HAVE_X11=no") catch unreachable;
@@ -81,42 +80,56 @@ pub fn build(b: *std.Build) void {
 
     const mupdf_build_step = b.addSystemCommand(make_args.items);
 
+    const exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const exe = b.addExecutable(.{
         .name = "fancy-cat",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = exe_mod,
     });
     exe.headerpad_max_install_names = true;
 
-    if (target.result.os.tag == .macos) exe.linkFramework("CoreGraphics");
+    if (target.result.os.tag == .macos) {
+        exe_mod.linkFramework("CoreGraphics", .{});
+    }
 
     const deps = .{
         .vaxis = b.dependency("vaxis", .{ .target = target, .optimize = optimize }),
-        .fzwatch = b.dependency("fzwatch", .{ .target = target, .optimize = optimize }),
         .fastb64z = b.dependency("fastb64z", .{ .target = target, .optimize = optimize }),
+        .fzwatch = b.dependency("fzwatch", .{ .target = target, .optimize = optimize }),
     };
 
-    exe.root_module.addImport("fastb64z", deps.fastb64z.module("fastb64z"));
-    exe.root_module.addImport("vaxis", deps.vaxis.module("vaxis"));
-    exe.root_module.addImport("fzwatch", deps.fzwatch.module("fzwatch"));
+    const fzwatch_mod = deps.fzwatch.module("fzwatch");
+    if (target.result.os.tag == .macos) {
+        // Shadow CoreServices/CoreServices.h with a minimal shim so fzwatch's
+        // `@cImport` translates under Zig 0.16's Aro frontend, which can't
+        // parse the real SDK umbrella's Objective-C block syntax.
+        fzwatch_mod.addIncludePath(b.path("compat/fzwatch-macos"));
+        fzwatch_mod.linkFramework("CoreServices", .{});
+        fzwatch_mod.link_libc = true;
+    }
 
-    exe.root_module.addAnonymousImport("metadata", .{ .root_source_file = b.path("build.zig.zon") });
+    exe_mod.addImport("fastb64z", deps.fastb64z.module("fastb64z"));
+    exe_mod.addImport("vaxis", deps.vaxis.module("vaxis"));
+    exe_mod.addImport("fzwatch", fzwatch_mod);
+
+    exe_mod.addAnonymousImport("metadata", .{ .root_source_file = b.path("build.zig.zon") });
 
     if (useVendorMupdf) {
         exe.step.dependOn(&mupdf_build_step.step);
-        addMupdfStatic(exe, b, location);
+        addMupdfStatic(exe_mod, b, location);
         b.installArtifact(exe);
         b.getInstallStep().dependOn(&mupdf_build_step.step);
     } else {
-        addMupdfDynamic(exe, target.result);
+        addMupdfDynamic(exe_mod, target.result);
         b.installArtifact(exe);
     }
 
-    exe.addIncludePath(.{ .cwd_relative = "src/mupdf-z" });
-    exe.addCSourceFile(.{ .file = .{ .cwd_relative = "src/mupdf-z/fitz-z.c" } });
+    exe_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/src/mupdf-z", .{root}) });
+    exe_mod.addCSourceFile(.{ .file = .{ .cwd_relative = b.fmt("{s}/src/mupdf-z/fitz-z.c", .{root}) } });
+    exe_mod.addCSourceFile(.{ .file = .{ .cwd_relative = b.fmt("{s}/src/mupdf-z/dpi-z.c", .{root}) } });
 
     const run_cmd = b.addRunArtifact(exe);
     if (b.args) |args| run_cmd.addArgs(args);

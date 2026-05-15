@@ -55,7 +55,7 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
         }
 
         const history_prefix = self.history_prefix.?;
-        var filtered = std.ArrayList([]const u8){};
+        var filtered: std.ArrayList([]const u8) = .empty;
         defer filtered.deinit(self.context.allocator);
 
         for (self.context.history.items.items) |cmd| {

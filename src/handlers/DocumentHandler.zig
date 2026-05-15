@@ -24,6 +24,7 @@ file_format: FileFormat,
 
 pub fn init(
     allocator: std.mem.Allocator,
+    io: std.Io,
     path: []const u8,
     initial_page: ?u16,
     config: *Config,
@@ -31,7 +32,7 @@ pub fn init(
     // TODO use this for conditional rendering
     const format = try FileFormat.fromPath(path);
 
-    var pdf_handler = try PdfHandler.init(allocator, path, config);
+    var pdf_handler = try PdfHandler.init(allocator, io, path, config);
     errdefer pdf_handler.deinit();
 
     const current_page_number = if (initial_page) |page| blk: {

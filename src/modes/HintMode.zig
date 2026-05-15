@@ -23,8 +23,8 @@ prefix: std.ArrayList(u8),
 pub fn init(context: *Context) Self {
     var self = Self{
         .context = context,
-        .hints = .{},
-        .prefix = .{},
+        .hints = .empty,
+        .prefix = .empty,
     };
     self.populate() catch {};
     return self;
@@ -103,7 +103,7 @@ fn populate(self: *Self) !void {
                 try self.hints.items[idx].positions.append(a, .{ .cell_col = cell_col, .cell_row = cell_row });
                 if (link.target == .uri) a.free(link.target.uri);
             } else {
-                var positions = std.ArrayList(Position){};
+                var positions: std.ArrayList(Position) = .empty;
                 try positions.append(a, .{ .cell_col = cell_col, .cell_row = cell_row });
                 try self.hints.append(a, .{
                     .label = "",
@@ -152,11 +152,12 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
                         self.context.resetCurrentPage();
                     },
                     .uri => |uri| {
-                        var child = std.process.Child.init(&.{ "open", uri }, self.context.allocator);
-                        child.stdin_behavior = .Ignore;
-                        child.stdout_behavior = .Ignore;
-                        child.stderr_behavior = .Ignore;
-                        _ = child.spawn() catch {};
+                        _ = std.process.spawn(self.context.io, .{
+                            .argv = &.{ "open", uri },
+                            .stdin = .ignore,
+                            .stdout = .ignore,
+                            .stderr = .ignore,
+                        }) catch {};
                     },
                 }
                 self.context.changeMode(.view);

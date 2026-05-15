@@ -232,31 +232,29 @@ cache: Cache = .{},
 
 legacy_path: bool = false,
 
-pub fn init(allocator: std.mem.Allocator) Self {
+pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map) Self {
     var self = Self{ .arena = std.heap.ArenaAllocator.init(allocator) };
     const arena_allocator = self.arena.allocator();
 
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return self;
-    defer allocator.free(home);
+    const home = env.get("HOME") orelse return self;
 
     var path: []u8 = "";
-    const xdg_config_home = std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME") catch null;
-    if (xdg_config_home) |x| {
+    if (env.get("XDG_CONFIG_HOME")) |x| {
         path = std.fmt.allocPrint(allocator, "{s}/fancy-cat/config.json", .{x}) catch return self;
-        allocator.free(x);
     } else path = std.fmt.allocPrint(allocator, "{s}/.config/fancy-cat/config.json", .{home}) catch return self;
     defer allocator.free(path);
 
-    var content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch null;
+    const cwd = std.Io.Dir.cwd();
+    var content: ?[]u8 = cwd.readFileAlloc(io, path, allocator, .limited(1024 * 1024)) catch null;
     if (content == null) {
         const legacy_path = std.fmt.allocPrint(allocator, "{s}/.fancy-cat", .{home}) catch return self;
         defer allocator.free(legacy_path);
 
-        content = std.fs.cwd().readFileAlloc(allocator, legacy_path, 1024 * 1024) catch null;
+        content = cwd.readFileAlloc(io, legacy_path, allocator, .limited(1024 * 1024)) catch null;
         if (content == null) {
-            if (std.fs.path.dirname(path)) |dir| std.fs.cwd().makePath(dir) catch {};
-            const file = std.fs.createFileAbsolute(path, .{}) catch return self;
-            file.close();
+            if (std.fs.path.dirname(path)) |dir| cwd.createDirPath(io, dir) catch {};
+            const file = cwd.createFile(io, path, .{}) catch return self;
+            file.close(io);
             return self;
         }
         self.legacy_path = true;

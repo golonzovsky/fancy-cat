@@ -21,13 +21,13 @@ This is a fork of [freref/fancy-cat](https://github.com/freref/fancy-cat) with t
 - **Auto-crop margins** (`t`) — uses mupdf's bbox device to render only the page's content rect; odd/even pages with different margins are independently cropped.
 - **Odd-page horizontal alignment** (`:oddx N`) — for books with asymmetric inner margins. Shift is baked into the mupdf CTM during render, so no display gap appears.
 - **Link hint mode** (`;`) — vim-style overlay labels on every visible link; type the letter(s) to follow. Duplicate links (same target) share a label.
-- **Table of contents** (`:toc`) — popup tree of mupdf's outline. Defaults to collapsed-with-current-page-ancestry-expanded, so you see chapters with the section you're in opened. `l`/`h` (or `→`/`←`) expand/collapse; Space toggles; Enter jumps; mouse wheel and `j`/`k` navigate; `g`/`G` for top/bottom.
-- **Marks** (vim-style) — `m<letter>` sets a mark at the current page+scroll, `'<letter>` jumps to it. `:marks` opens a popup to list/jump/delete (`d` to delete). `:mark a some comment` sets a mark with a comment; `:delmark a` removes one. Persisted per document.
+- **Table of contents** (`T` to toggle, or `:toc`) — popup tree of mupdf's outline. Defaults to collapsed-with-current-page-ancestry-expanded, so you see chapters with the section you're in opened. `l`/`h` (or `→`/`←`) expand/collapse; Space toggles; Enter jumps; mouse wheel and `j`/`k` navigate; `g`/`G` for top/bottom.
+- **Marks** (vim-style) — `m<letter>` sets a mark at the current page+scroll, `'<letter>` jumps to it. `M` (or `:marks`) opens a popup listing marks alongside the TOC section title for each. `Enter` jumps, `r` renames (opens command line pre-filled with `mark <letter> <current comment>`), `d` deletes; mouse wheel and `j`/`k` navigate. `:mark a some comment` sets a mark with a comment; `:delmark a` removes one. Persisted per document.
 - **Link navigation history** — vim-style `Ctrl+O` (back) / `Tab` (forward) jump list. Only link follows and mark jumps push to the list; manual nav doesn't.
 - **Per-document position persistence** — page, scroll, zoom, oddx, colorize, crop, hlock, and all marks are saved on quit and restored on next open. Stored at `${XDG_STATE_HOME:-~/.local/state}/fancy-cat/positions.json`, keyed by PDF `/ID` (or SHA-256 of first 1MB, or path) so files survive being moved.
 - **Status / command bar share a row** — image no longer overlaps the status row; in command mode, status is hidden in favor of the command bar.
 - **Build artifacts moved out of the submodule** — mupdf installs to `mupdf-out/` at the project root (gitignored) instead of dirtying `deps/mupdf/local/`.
-- **macOS 26 (Tahoe) build** — Zig 0.15.2's bundled LLD can't parse the macOS 26 SDK's `libSystem.tbd`. Workaround is an `xcrun` shim that reports a 15.x SDK path; see commit log if you hit linker errors about `_malloc`, `_getcwd`, etc.
+- **Migrated to Zig 0.16.**
 
 Misc smaller fixes: `f` (full screen) preserves active zoom and scroll instead of resetting; horizontal scroll preserved across page transitions; cache always consulted (the old `should_check_cache` one-shot gate is gone).
 
@@ -59,7 +59,7 @@ An example `config.json` and documentation can be found [here](./docs/config.md)
 
 ### Requirements
 
-- Zig version `0.15.2`
+- Zig version `0.16.0` (matches `build.zig.zon`'s `minimum_zig_version`)
 - Terminal emulator with the Kitty image protocol (e.g. Kitty, Ghostty, WezTerm, etc.)
 
 ### Build
