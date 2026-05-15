@@ -16,6 +16,8 @@ pub const KeyMap = struct {
     hint_mode: vaxis.Key = .{ .codepoint = ';' },
     set_mark: vaxis.Key = .{ .codepoint = 'm' },
     jump_mark: vaxis.Key = .{ .codepoint = '\'' },
+    toc_mode: vaxis.Key = .{ .codepoint = 'T' },
+    marks_mode: vaxis.Key = .{ .codepoint = 'M' },
     colorize: vaxis.Key = .{ .codepoint = 'z' },
     quit: vaxis.Key = .{ .codepoint = 'c', .mods = .{ .ctrl = true } },
     full_screen: vaxis.Key = .{ .codepoint = 'f' },

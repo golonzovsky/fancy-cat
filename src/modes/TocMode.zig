@@ -92,7 +92,9 @@ fn setCursorNearCurrentPage(self: *Self) void {
 }
 
 pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
-    if (key.matches(km.exit_command_mode.codepoint, km.exit_command_mode.mods)) {
+    if (key.matches(km.exit_command_mode.codepoint, km.exit_command_mode.mods) or
+        key.matches(km.toc_mode.codepoint, km.toc_mode.mods))
+    {
         self.context.changeMode(.view);
         return;
     }

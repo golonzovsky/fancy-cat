@@ -325,6 +325,10 @@ pub const Context = struct {
                     self.current_mode.toc.handleMouse(mouse);
                     return;
                 }
+                if (self.current_mode == .marks) {
+                    self.current_mode.marks.handleMouse(mouse);
+                    return;
+                }
                 if (self.current_mode == .view and mouse.type == .press) {
                     const step = self.config.general.scroll_step / 4.0;
                     const zoom_mod = mouse.mods.ctrl or mouse.mods.alt;
@@ -680,6 +684,13 @@ pub const Context = struct {
                 _ = self.marks.orderedRemove(i);
                 return;
             }
+        }
+    }
+
+    pub fn enterCommandWithText(self: *Self, text: []const u8) void {
+        self.changeMode(.command);
+        if (self.current_mode == .command) {
+            self.current_mode.command.text_input.insertSliceAtCursor(text) catch {};
         }
     }
 

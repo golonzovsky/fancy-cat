@@ -188,6 +188,24 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
             }.action,
         },
         .{
+            .codepoint = km.toc_mode.codepoint,
+            .mods = km.toc_mode.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.changeMode(.toc);
+                }
+            }.action,
+        },
+        .{
+            .codepoint = km.marks_mode.codepoint,
+            .mods = km.marks_mode.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.changeMode(.marks);
+                }
+            }.action,
+        },
+        .{
             .codepoint = km.jump_back.codepoint,
             .mods = km.jump_back.mods,
             .handler = struct {
