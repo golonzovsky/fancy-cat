@@ -28,6 +28,7 @@ pub const KeyMap = struct {
     history_forward: vaxis.Key = .{ .codepoint = vaxis.Key.down },
     jump_back: vaxis.Key = .{ .codepoint = 'o', .mods = .{ .ctrl = true } },
     jump_forward: vaxis.Key = .{ .codepoint = vaxis.Key.tab },
+    open_in_editor: vaxis.Key = .{ .codepoint = 'e' },
 
     pub fn parse(val: std.json.Value, allocator: std.mem.Allocator) KeyMap {
         var keymap = KeyMap{};

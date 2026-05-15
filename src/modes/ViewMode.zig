@@ -223,6 +223,15 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
                 }
             }.action,
         },
+        .{
+            .codepoint = km.open_in_editor.codepoint,
+            .mods = km.open_in_editor.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.openCurrentPageInEditor() catch {};
+                }
+            }.action,
+        },
     };
 
     for (key_actions) |action| {

@@ -3,6 +3,7 @@
 These are the commands that can be executed:
 
 - `:q` — quit
+- `:edit` — extract current page's text to a temp `.md` file and open in `$EDITOR` (or `$VISUAL`, fallback `vim`)
 - `:<number>%` — set zoom level
 - `:<number>` — go to page number
 - `:x+<number>` / `:x-<number>` — scroll right (`+`) or left (`-`) by the given amount (e.g. `:x+10.5`)

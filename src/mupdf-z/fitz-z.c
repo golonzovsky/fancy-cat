@@ -69,6 +69,25 @@ void fz_walk_outline_z(fz_context *ctx, fz_document *doc, void *userdata, fz_out
   fz_drop_outline(ctx, root);
 }
 
+int fz_write_page_text_z(fz_context *ctx, fz_document *doc, int page_num, const char *path) {
+  int ok = 0;
+  fz_stext_page *stext = NULL;
+  fz_output *out = NULL;
+  fz_try(ctx) {
+    stext = fz_new_stext_page_from_page_number(ctx, doc, page_num, NULL);
+    out = fz_new_output_with_path(ctx, path, 0);
+    fz_print_stext_page_as_text(ctx, out, stext);
+    fz_close_output(ctx, out);
+    ok = 1;
+  }
+  fz_always(ctx) {
+    if (out) fz_drop_output(ctx, out);
+    if (stext) fz_drop_stext_page(ctx, stext);
+  }
+  fz_catch(ctx) { ok = 0; }
+  return ok;
+}
+
 int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out) {
   int ok = 0;
   fz_device *dev = NULL;

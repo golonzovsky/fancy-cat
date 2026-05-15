@@ -161,6 +161,10 @@ pub fn loadOutline(self: *Self, allocator: std.mem.Allocator) ![]PdfHandler.Outl
     return self.pdf_handler.loadOutline(allocator);
 }
 
+pub fn writePageText(self: *Self, page_number: u16, path: [:0]const u8) !void {
+    return self.pdf_handler.writePageText(page_number, path);
+}
+
 pub fn resetDefaultZoom(self: *Self) void {
     self.pdf_handler.resetDefaultZoom();
 }

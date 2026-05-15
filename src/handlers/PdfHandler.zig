@@ -514,3 +514,9 @@ pub fn findLinkAtPoint(
 pub fn getWidthMode(self: *Self) bool {
     return self.width_mode;
 }
+
+pub fn writePageText(self: *Self, page_number: u16, path: [:0]const u8) !void {
+    if (c.fz_write_page_text_z(self.ctx, self.doc, @as(c_int, @intCast(page_number)), path.ptr) == 0) {
+        return types.DocumentError.FailedToRenderPage;
+    }
+}

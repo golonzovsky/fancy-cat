@@ -14,3 +14,5 @@ void fz_walk_outline_z(fz_context *ctx, fz_document *doc, void *userdata, fz_out
 int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size);
 // Computes the tight bounding box of all drawn content on a page. Returns 1 on success.
 int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out);
+// Extracts the text of a page via mupdf's stext device and writes it to `path`. Returns 1 on success.
+int fz_write_page_text_z(fz_context *ctx, fz_document *doc, int page_num, const char *path);

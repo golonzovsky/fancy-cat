@@ -64,6 +64,7 @@ pub const Context = struct {
     watcher: ?fzwatch.Watcher,
     watcher_thread: ?std.Thread,
     config: *Config,
+    loop: ?*vaxis.Loop(Event),
     current_mode: Mode,
     history: History,
     positions: Positions,
@@ -151,6 +152,7 @@ pub const Context = struct {
             .mouse = null,
             .watcher_thread = null,
             .config = config,
+            .loop = null,
             .current_mode = undefined,
             .history = history,
             .positions = positions,
@@ -237,6 +239,8 @@ pub const Context = struct {
         self.current_mode = .{ .view = ViewMode.init(self) };
 
         var loop: vaxis.Loop(Event) = .init(self.io, &self.tty, &self.vx);
+        self.loop = &loop;
+        defer self.loop = null;
 
         try loop.start();
         defer loop.stop();
@@ -687,6 +691,47 @@ pub const Context = struct {
                 return;
             }
         }
+    }
+
+    pub fn openCurrentPageInEditor(self: *Self) !void {
+        const page = self.document_handler.getCurrentPageNumber();
+        const pid = std.c.getpid();
+        const path = try std.fmt.allocPrintSentinel(self.allocator, "/tmp/fancy-cat-{d}-page{d}.md", .{ pid, page + 1 }, 0);
+        defer self.allocator.free(path);
+
+        try self.document_handler.writePageText(page, path);
+
+        var writer = self.tty.writer();
+        try self.vx.setMouseMode(writer, false);
+        try self.vx.exitAltScreen(writer);
+        try writer.flush();
+
+        // Release the tty so the editor can read stdin — otherwise the vaxis
+        // input thread keeps consuming keystrokes from underneath the editor.
+        if (self.loop) |loop| loop.stop();
+
+        const editor_raw = self.env.get("EDITOR") orelse self.env.get("VISUAL") orelse "vim";
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(self.allocator);
+        var it = std.mem.tokenizeAny(u8, editor_raw, &std.ascii.whitespace);
+        while (it.next()) |tok| try argv.append(self.allocator, tok);
+        try argv.append(self.allocator, path);
+
+        var child = try std.process.spawn(self.io, .{
+            .argv = argv.items,
+            .environ_map = self.env,
+        });
+        _ = child.wait(self.io) catch {};
+
+        std.Io.Dir.deleteFileAbsolute(self.io, path) catch {};
+
+        if (self.loop) |loop| try loop.start();
+
+        try self.vx.enterAltScreen(writer);
+        try self.vx.setMouseMode(writer, true);
+        try writer.flush();
+        self.cache.clear();
+        self.reload_page = true;
     }
 
     pub fn enterCommandWithText(self: *Self, text: []const u8) void {
