@@ -165,6 +165,17 @@ pub fn writePageText(self: *Self, page_number: u16, path: [:0]const u8) !void {
     return self.pdf_handler.writePageText(page_number, path);
 }
 
+pub fn writePagesText(
+    self: *Self,
+    start_page: u16,
+    end_page: u16,
+    path: [:0]const u8,
+    on_progress: ?*const fn (?*anyopaque, c_int, c_int) callconv(.c) void,
+    progress_userdata: ?*anyopaque,
+) !void {
+    return self.pdf_handler.writePagesText(start_page, end_page, path, on_progress, progress_userdata);
+}
+
 pub fn resetDefaultZoom(self: *Self) void {
     self.pdf_handler.resetDefaultZoom();
 }

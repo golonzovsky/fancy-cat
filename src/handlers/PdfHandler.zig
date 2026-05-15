@@ -516,10 +516,21 @@ pub fn getWidthMode(self: *Self) bool {
 }
 
 pub fn writePageText(self: *Self, page_number: u16, path: [:0]const u8) !void {
+    return self.writePagesText(page_number, page_number + 1, path, null, null);
+}
+
+pub fn writePagesText(
+    self: *Self,
+    start_page: u16,
+    end_page: u16,
+    path: [:0]const u8,
+    on_progress: ?*const fn (?*anyopaque, c_int, c_int) callconv(.c) void,
+    progress_userdata: ?*anyopaque,
+) !void {
     const black: c_int = if (self.config.general.colorize) @intCast(self.config.general.black) else 0x000000;
     const white: c_int = if (self.config.general.colorize) @intCast(self.config.general.white) else 0xffffff;
     const scale: f32 = if (self.active_zoom > 0) self.active_zoom else 4.0;
-    if (c.fz_write_page_text_z(self.ctx, self.doc, @as(c_int, @intCast(page_number)), path.ptr, scale, black, white) == 0) {
+    if (c.fz_write_pages_text_z(self.ctx, self.doc, @as(c_int, @intCast(start_page)), @as(c_int, @intCast(end_page)), path.ptr, scale, black, white, on_progress, progress_userdata) == 0) {
         return types.DocumentError.FailedToRenderPage;
     }
 }

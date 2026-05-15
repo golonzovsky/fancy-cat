@@ -70,12 +70,16 @@ void fz_walk_outline_z(fz_context *ctx, fz_document *doc, void *userdata, fz_out
   fz_drop_outline(ctx, root);
 }
 
+#define MD_MAX_TEXT_BBOXES 128
+
 typedef struct {
   fz_output *out;
   fz_page *page;
   const char *base_path; // path to .md without the extension
   fz_rect mediabox;
   fz_rect pending_rect;
+  fz_rect text_bboxes[MD_MAX_TEXT_BBOXES];
+  int text_bbox_count;
   float body_size;
   int pending_active;
   int image_counter;
@@ -85,7 +89,47 @@ typedef struct {
   int in_bold;
   int in_italic;
   int in_mono;
+  int last_was_space;
 } md_state;
+
+static float md_rect_area(fz_rect r) {
+  float w = r.x1 - r.x0;
+  float h = r.y1 - r.y0;
+  return (w > 0 && h > 0) ? w * h : 0;
+}
+
+static float md_intersect_area(fz_rect a, fz_rect b) {
+  float x0 = a.x0 > b.x0 ? a.x0 : b.x0;
+  float y0 = a.y0 > b.y0 ? a.y0 : b.y0;
+  float x1 = a.x1 < b.x1 ? a.x1 : b.x1;
+  float y1 = a.y1 < b.y1 ? a.y1 : b.y1;
+  if (x1 <= x0 || y1 <= y0) return 0;
+  return (x1 - x0) * (y1 - y0);
+}
+
+// Fraction of `region` covered by collected text bboxes. Used to decide whether
+// a vector region is "text-heavy" (a decorative box around a paragraph — skip
+// the raster, keep the text) or sparse (a real diagram with at most a few
+// labels — render the raster).
+static float md_text_coverage(md_state *st, fz_rect region) {
+  float region_area = md_rect_area(region);
+  if (region_area <= 0) return 0;
+  float covered = 0;
+  for (int i = 0; i < st->text_bbox_count; i++) {
+    covered += md_intersect_area(st->text_bboxes[i], region);
+  }
+  return covered / region_area;
+}
+
+static void md_collect_text_bboxes(fz_stext_block *blocks, fz_rect *out, int *count, int cap) {
+  for (fz_stext_block *b = blocks; b; b = b->next) {
+    if (b->type == FZ_STEXT_BLOCK_TEXT) {
+      if (*count < cap) out[(*count)++] = b->bbox;
+    } else if (b->type == FZ_STEXT_BLOCK_STRUCT && b->u.s.down) {
+      md_collect_text_bboxes(b->u.s.down->first_block, out, count, cap);
+    }
+  }
+}
 
 static int md_is_bold(fz_context *ctx, fz_stext_char *c) {
   if (c->flags & FZ_STEXT_BOLD) return 1;
@@ -151,6 +195,12 @@ static float md_body_size(fz_stext_page *page) {
   return (float)best_idx;
 }
 
+static void md_emit_space(fz_context *ctx, md_state *st) {
+  if (st->last_was_space) return;
+  fz_write_byte(ctx, st->out, ' ');
+  st->last_was_space = 1;
+}
+
 static void md_close_styles(fz_context *ctx, md_state *st) {
   if (st->in_mono) { fz_write_byte(ctx, st->out, '`'); st->in_mono = 0; }
   if (st->in_italic) { fz_write_byte(ctx, st->out, '*'); st->in_italic = 0; }
@@ -181,23 +231,24 @@ static void md_emit_text_block(fz_context *ctx, md_state *st, fz_stext_block *b)
     else if (r >= 1.2f) fz_write_string(ctx, st->out, "### ");
   }
 
+  st->last_was_space = 1; // suppress leading/duplicate spaces
   for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
     for (fz_stext_char *c = l->first_char; c; c = c->next) {
       if (c->c == 0xFFFD || c->c == 0x00AD) continue; // replacement char + soft hyphen
       if (c->c <= 32) {
-        // Don't carry styles across whitespace; close first so we don't
-        // emit invalid Markdown like "**foo **".
         md_close_styles(ctx, st);
-        fz_write_byte(ctx, st->out, ' ');
+        md_emit_space(ctx, st);
         continue;
       }
       md_sync_styles(ctx, st, md_is_bold(ctx, c), md_is_italic(ctx, c), md_is_mono(ctx, c));
       fz_write_rune(ctx, st->out, c->c);
+      st->last_was_space = 0;
     }
     md_close_styles(ctx, st);
-    if (l->next) fz_write_byte(ctx, st->out, ' ');
+    if (l->next) md_emit_space(ctx, st);
   }
   fz_write_string(ctx, st->out, "\n\n");
+  st->last_was_space = 1;
 }
 
 static void md_flush_pending(fz_context *ctx, md_state *st) {
@@ -213,10 +264,14 @@ static void md_flush_pending(fz_context *ctx, md_state *st) {
   float page_w = st->mediabox.x1 - st->mediabox.x0;
   float page_h = st->mediabox.y1 - st->mediabox.y0;
   if (page_w > 0 && page_h > 0 && w > 0.95f * page_w && h > 0.95f * page_h) return;
+  // If the region is mostly text (a decorative box around a paragraph) keep the
+  // copyable text and skip the raster — point of the editor flow is to copy
+  // text. Pure diagrams with sparse labels (< 25% text coverage) still render.
+  if (md_text_coverage(st, r) > 0.25f) return;
 
   st->image_counter++;
   char img_path[1024];
-  snprintf(img_path, sizeof(img_path), "%s-img%d.png", st->base_path, st->image_counter);
+  snprintf(img_path, sizeof(img_path), "%s/img%d.png", st->base_path, st->image_counter);
 
   fz_pixmap *pix = NULL;
   fz_device *dev = NULL;
@@ -231,7 +286,8 @@ static void md_flush_pending(fz_context *ctx, md_state *st) {
     fz_close_device(ctx, dev);
     fz_tint_pixmap(ctx, pix, st->black, st->white);
     fz_save_pixmap_as_png(ctx, pix, img_path);
-    fz_write_printf(ctx, st->out, "![](%s)\n\n", img_path);
+    // Emit a relative reference so the md is self-contained inside its dir.
+    fz_write_printf(ctx, st->out, "![](img%d.png)\n\n", st->image_counter);
   }
   fz_always(ctx) {
     if (dev) fz_drop_device(ctx, dev);
@@ -280,39 +336,74 @@ static void md_print_page(fz_context *ctx, fz_output *out, fz_page *page, fz_ste
   md_walk(ctx, &st, stext->first_block);
 }
 
-int fz_write_page_text_z(fz_context *ctx, fz_document *doc, int page_num, const char *path, float scale, int black, int white) {
+int fz_write_pages_text_z(fz_context *ctx, fz_document *doc, int start_page, int end_page, const char *path, float scale, int black, int white, fz_progress_fn on_progress, void *progress_userdata) {
   int ok = 0;
-  fz_page *page = NULL;
-  fz_stext_page *stext = NULL;
   fz_output *out = NULL;
 
-  // Derive base path = `path` with a trailing `.md` stripped, used to name rendered diagrams.
+  // base = dirname(path). Images go next to the .md in the same directory.
   char base[1024];
   size_t plen = strlen(path);
   if (plen >= sizeof(base)) plen = sizeof(base) - 1;
   memcpy(base, path, plen);
   base[plen] = 0;
-  if (plen >= 3 && base[plen - 3] == '.' && base[plen - 2] == 'm' && base[plen - 1] == 'd') {
-    base[plen - 3] = 0;
-  }
+  char *slash = strrchr(base, '/');
+  if (slash) *slash = 0;
+  else base[0] = '.', base[1] = 0;
 
-  fz_stext_options opts = { .flags = FZ_STEXT_PRESERVE_IMAGES | FZ_STEXT_COLLECT_VECTORS };
+  md_state st = {
+    .base_path = base,
+    .scale = scale,
+    .black = black,
+    .white = white,
+  };
+
+  fz_stext_options opts = { .flags = FZ_STEXT_PRESERVE_IMAGES | FZ_STEXT_COLLECT_VECTORS | FZ_STEXT_DEHYPHENATE };
   fz_try(ctx) {
-    page = fz_load_page(ctx, doc, page_num);
-    stext = fz_new_stext_page_from_page(ctx, page, &opts);
     out = fz_new_output_with_path(ctx, path, 0);
     fz_write_string(ctx, out, "<!-- markdownlint-disable -->\n\n");
-    md_print_page(ctx, out, page, stext, base, scale, black, white);
+    st.out = out;
+
+    int total = end_page - start_page;
+    for (int p = start_page; p < end_page; p++) {
+      if (on_progress) on_progress(progress_userdata, p - start_page, total);
+      fz_page *page = NULL;
+      fz_stext_page *stext = NULL;
+      fz_try(ctx) {
+        page = fz_load_page(ctx, doc, p);
+        stext = fz_new_stext_page_from_page(ctx, page, &opts);
+        st.page = page;
+        st.mediabox = stext->mediabox;
+        st.body_size = md_body_size(stext);
+        st.in_bold = 0;
+        st.in_italic = 0;
+        st.in_mono = 0;
+        st.pending_active = 0;
+        st.text_bbox_count = 0;
+        md_collect_text_bboxes(stext->first_block, st.text_bboxes, &st.text_bbox_count, MD_MAX_TEXT_BBOXES);
+        md_walk(ctx, &st, stext->first_block);
+      }
+      fz_always(ctx) {
+        if (stext) fz_drop_stext_page(ctx, stext);
+        if (page) fz_drop_page(ctx, page);
+      }
+      fz_catch(ctx) {
+        // Skip this page on error, keep going.
+      }
+    }
+
+    if (on_progress) on_progress(progress_userdata, total, total);
     fz_close_output(ctx, out);
     ok = 1;
   }
   fz_always(ctx) {
     if (out) fz_drop_output(ctx, out);
-    if (stext) fz_drop_stext_page(ctx, stext);
-    if (page) fz_drop_page(ctx, page);
   }
   fz_catch(ctx) { ok = 0; }
   return ok;
+}
+
+int fz_write_page_text_z(fz_context *ctx, fz_document *doc, int page_num, const char *path, float scale, int black, int white) {
+  return fz_write_pages_text_z(ctx, doc, page_num, page_num + 1, path, scale, black, white, NULL, NULL);
 }
 
 int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out) {

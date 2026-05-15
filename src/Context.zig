@@ -85,6 +85,8 @@ pub const Context = struct {
     lock_horizontal_scroll: bool,
     marks: std.ArrayList(Positions.Mark),
     pending_op: ?enum { set_mark, jump_mark },
+    progress_text: ?[]const u8,
+    progress_buf: [128]u8,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !Self {
         const path = args[1];
@@ -173,6 +175,8 @@ pub const Context = struct {
             .lock_horizontal_scroll = restored_hlock,
             .marks = marks,
             .pending_op = null,
+            .progress_text = null,
+            .progress_buf = undefined,
         };
     }
 
@@ -696,11 +700,78 @@ pub const Context = struct {
     pub fn openCurrentPageInEditor(self: *Self) !void {
         const page = self.document_handler.getCurrentPageNumber();
         const pid = std.c.getpid();
-        const path = try std.fmt.allocPrintSentinel(self.allocator, "/tmp/fancy-cat-{d}-page{d}.md", .{ pid, page + 1 }, 0);
+        const dir = try std.fmt.allocPrint(self.allocator, "/tmp/fancy-cat-{d}-page{d}", .{ pid, page + 1 });
+        defer self.allocator.free(dir);
+        const path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/page{d}.md", .{ dir, page + 1 }, 0);
         defer self.allocator.free(path);
 
+        std.Io.Dir.createDirAbsolute(self.io, dir, .default_dir) catch {};
         try self.document_handler.writePageText(page, path);
+        try self.spawnEditorAndWait(path, dir);
+    }
 
+    fn currentChapterRange(self: *Self, current_page: u16) struct { start: u16, end: u16 } {
+        const total = self.document_handler.getTotalPages();
+        const entries = self.document_handler.loadOutline(self.allocator) catch return .{ .start = current_page, .end = current_page + 1 };
+        defer {
+            for (entries) |e| self.allocator.free(e.title);
+            self.allocator.free(entries);
+        }
+        if (entries.len == 0) return .{ .start = current_page, .end = current_page + 1 };
+
+        var min_depth: u8 = 255;
+        for (entries) |e| {
+            if (e.depth < min_depth) min_depth = e.depth;
+        }
+
+        var start: u16 = 0;
+        var end: u16 = total;
+        var found = false;
+        for (entries, 0..) |e, i| {
+            if (e.depth != min_depth) continue;
+            if (e.page <= current_page) {
+                start = e.page;
+                found = true;
+                end = total;
+                for (entries[i + 1 ..]) |next_e| {
+                    if (next_e.depth == min_depth) {
+                        end = next_e.page;
+                        break;
+                    }
+                }
+            } else break;
+        }
+        if (!found) return .{ .start = current_page, .end = current_page + 1 };
+        return .{ .start = start, .end = end };
+    }
+
+    fn progressCallback(ud: ?*anyopaque, current: c_int, total: c_int) callconv(.c) void {
+        const self = @as(*Self, @ptrCast(@alignCast(ud.?)));
+        const msg = std.fmt.bufPrint(&self.progress_buf, " Rendering chapter {d}/{d} ", .{ current, total }) catch return;
+        self.progress_text = msg;
+        const win = self.vx.window();
+        self.drawStatusBar(win) catch return;
+        var w = self.tty.writer();
+        self.vx.render(w) catch return;
+        w.flush() catch return;
+    }
+
+    pub fn openCurrentChapterInEditor(self: *Self) !void {
+        const page = self.document_handler.getCurrentPageNumber();
+        const range = self.currentChapterRange(page);
+        const pid = std.c.getpid();
+        const dir = try std.fmt.allocPrint(self.allocator, "/tmp/fancy-cat-{d}-chap-{d}-{d}", .{ pid, range.start + 1, range.end });
+        defer self.allocator.free(dir);
+        const path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/chap-{d}-{d}.md", .{ dir, range.start + 1, range.end }, 0);
+        defer self.allocator.free(path);
+
+        std.Io.Dir.createDirAbsolute(self.io, dir, .default_dir) catch {};
+        try self.document_handler.writePagesText(range.start, range.end, path, progressCallback, self);
+        self.progress_text = null;
+        try self.spawnEditorAndWait(path, dir);
+    }
+
+    fn spawnEditorAndWait(self: *Self, path: [:0]const u8, dir: []const u8) !void {
         var writer = self.tty.writer();
         try self.vx.setMouseMode(writer, false);
         try self.vx.exitAltScreen(writer);
@@ -723,15 +794,15 @@ pub const Context = struct {
         });
         _ = child.wait(self.io) catch {};
 
-        std.Io.Dir.deleteFileAbsolute(self.io, path) catch {};
-        // Also clean up any diagram PNGs the extractor emitted (`<base>-imgN.png`).
-        const base = if (std.mem.endsWith(u8, path, ".md")) path[0 .. path.len - 3] else path;
-        var i: u8 = 1;
-        while (i <= 50) : (i += 1) {
-            const img = std.fmt.allocPrint(self.allocator, "{s}-img{d}.png", .{ base, i }) catch break;
-            defer self.allocator.free(img);
-            std.Io.Dir.deleteFileAbsolute(self.io, img) catch break;
-        }
+        // Clean up the per-extract directory and everything inside it.
+        const last_slash = std.mem.lastIndexOfScalar(u8, dir, '/') orelse 0;
+        const parent = dir[0..last_slash];
+        const leaf = dir[last_slash + 1 ..];
+        if (std.Io.Dir.openDirAbsolute(self.io, parent, .{})) |opened_parent| {
+            var parent_dir = opened_parent;
+            defer parent_dir.close(self.io);
+            parent_dir.deleteTree(self.io, leaf) catch {};
+        } else |_| {}
 
         if (self.loop) |loop| try loop.start();
 
@@ -769,6 +840,12 @@ pub const Context = struct {
             .width = win.width,
             .height = 1,
         });
+
+        if (self.progress_text) |text| {
+            status_bar.fill(vaxis.Cell{ .style = self.config.status_bar.style });
+            _ = status_bar.print(&.{.{ .text = text, .style = self.config.status_bar.style }}, .{ .col_offset = 0 });
+            return;
+        }
 
         // Expand all items into styled sub-items
         var expanded_items = std.array_list.Managed(Config.StatusBar.StyledItem).init(arena);

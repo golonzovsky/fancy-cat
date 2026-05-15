@@ -141,9 +141,17 @@ fn handleToc(self: *Self, cmd: []const u8) bool {
 }
 
 fn handleEdit(self: *Self, cmd: []const u8) bool {
-    if (!std.mem.eql(u8, cmd, "edit")) return false;
-    self.context.openCurrentPageInEditor() catch {};
-    return true;
+    if (!std.mem.startsWith(u8, cmd, "edit")) return false;
+    const rest = std.mem.trim(u8, cmd["edit".len..], &std.ascii.whitespace);
+    if (rest.len == 0) {
+        self.context.openCurrentPageInEditor() catch {};
+        return true;
+    }
+    if (std.mem.eql(u8, rest, "c") or std.mem.eql(u8, rest, "chapter")) {
+        self.context.openCurrentChapterInEditor() catch {};
+        return true;
+    }
+    return false;
 }
 
 fn handleMarkComment(self: *Self, cmd: []const u8) bool {

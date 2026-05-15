@@ -18,3 +18,8 @@ int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out);
 // Diagrams alongside the markdown are rasterized at `scale` (pixels per PDF point) and tinted with
 // the given black/white colors. Pass (0x000000, 0xffffff) for an identity tint.
 int fz_write_page_text_z(fz_context *ctx, fz_document *doc, int page_num, const char *path, float scale, int black, int white);
+// Same as fz_write_page_text_z but for an inclusive page range [start_page, end_page). Diagram
+// numbering is global across the whole range. `on_progress` is invoked once per page (NULL to
+// disable).
+typedef void (*fz_progress_fn)(void *userdata, int current, int total);
+int fz_write_pages_text_z(fz_context *ctx, fz_document *doc, int start_page, int end_page, const char *path, float scale, int black, int white, fz_progress_fn on_progress, void *progress_userdata);
