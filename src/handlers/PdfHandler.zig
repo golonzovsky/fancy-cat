@@ -5,6 +5,7 @@ const vaxis = @import("vaxis");
 const Config = @import("../config/Config.zig");
 const types = @import("./types.zig");
 const Utilities = @import("../utilities/Utilities.zig");
+const Markdown = @import("./Markdown.zig");
 
 const c = @cImport({
     @cInclude("fitz-z.h");
@@ -515,6 +516,13 @@ pub fn getWidthMode(self: *Self) bool {
     return self.width_mode;
 }
 
+fn extractEventBridge(ud: ?*anyopaque, kind: c_int, chars: [*c]const c.fz_char_z, n: c_int, str: [*c]const u8) callconv(.c) void {
+    // Markdown.Char and fz_char_z have the same extern layout; pointer-cast across the FFI.
+    const md_chars: ?[*]const Markdown.Char = if (chars != null) @ptrCast(chars) else null;
+    const md_str: ?[*:0]const u8 = if (str != null) @ptrCast(str) else null;
+    Markdown.eventCallback(ud, kind, md_chars, n, md_str);
+}
+
 pub fn writePageText(self: *Self, page_number: u16, path: [:0]const u8) !void {
     return self.writePagesText(page_number, page_number + 1, path, null, null);
 }
@@ -530,7 +538,38 @@ pub fn writePagesText(
     const black: c_int = if (self.config.general.colorize) @intCast(self.config.general.black) else 0x000000;
     const white: c_int = if (self.config.general.colorize) @intCast(self.config.general.white) else 0xffffff;
     const scale: f32 = if (self.active_zoom > 0) self.active_zoom else 4.0;
-    if (c.fz_write_pages_text_z(self.ctx, self.doc, @as(c_int, @intCast(start_page)), @as(c_int, @intCast(end_page)), path.ptr, scale, black, white, on_progress, progress_userdata) == 0) {
-        return types.DocumentError.FailedToRenderPage;
-    }
+
+    var file = try std.Io.Dir.createFileAbsolute(self.io, path, .{});
+    defer file.close(self.io);
+    var buf: [4096]u8 = undefined;
+    var fw = file.writer(self.io, &buf);
+
+    try fw.interface.writeAll("<!-- markdownlint-disable -->\n\n");
+
+    var md = Markdown.init(self.allocator, &fw.interface);
+    defer md.deinit();
+
+    // Image dir = dirname(path).
+    const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse 0;
+    const image_dir = try self.allocator.dupeZ(u8, if (slash > 0) path[0..slash] else ".");
+    defer self.allocator.free(image_dir);
+
+    const rc = c.fz_extract_pages_z(
+        self.ctx,
+        self.doc,
+        @as(c_int, @intCast(start_page)),
+        @as(c_int, @intCast(end_page)),
+        scale,
+        black,
+        white,
+        image_dir.ptr,
+        extractEventBridge,
+        &md,
+        on_progress,
+        progress_userdata,
+    );
+    if (rc == 0) return types.DocumentError.FailedToRenderPage;
+    try md.finalize();
+    try fw.interface.flush();
+    if (md.write_failed) return types.DocumentError.FailedToRenderPage;
 }
