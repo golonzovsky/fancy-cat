@@ -10,6 +10,7 @@ pub const Char = extern struct {
     mono: u8,
     _pad: u8,
     size: f32,
+    origin_y: f32,
 };
 
 const event_page_start = 0;
@@ -189,6 +190,48 @@ fn emitParaLine(self: *Self, p: *ParaState, chars: []const Char) !void {
             continue;
         }
 
+        // Superscript run: scan ahead for the run's end. If every char maps to a
+        // Unicode superscript glyph, emit each translated. Otherwise wrap the
+        // run in <sup>...</sup> so renderers can still surface it.
+        if (isSuper(chars, i)) {
+            var j = i;
+            while (j < chars.len and isSuper(chars, j) and chars[j].codepoint > 32) : (j += 1) {}
+            const run = chars[i..j];
+            var all_translatable = true;
+            for (run) |sch| {
+                if (asSuperscript(sch.codepoint) == null) {
+                    all_translatable = false;
+                    break;
+                }
+            }
+
+            // Close emph before the pending space if the run's first char ends a styled run.
+            if (p.pending_space) {
+                if (p.in_mono and run[0].mono == 0) { try self.writer.writeByte('`'); p.in_mono = false; }
+                if (p.in_italic and run[0].italic == 0) { try self.writer.writeByte('*'); p.in_italic = false; }
+                if (p.in_bold and run[0].bold == 0) { try self.writer.writeAll("**"); p.in_bold = false; }
+                try self.writer.writeByte(' ');
+                p.last_was_space = true;
+                p.pending_space = false;
+            }
+            // Close any open mono span around <sup> — markdown ignores tags inside `code`.
+            if (!all_translatable and p.in_mono) {
+                try self.writer.writeByte('`');
+                p.in_mono = false;
+            }
+
+            if (all_translatable) {
+                for (run) |sch| try writeRune(self.writer, asSuperscript(sch.codepoint).?);
+            } else {
+                try self.writer.writeAll("<sup>");
+                for (run) |sch| try writeRune(self.writer, sch.codepoint);
+                try self.writer.writeAll("</sup>");
+            }
+            p.last_was_space = false;
+            i = j - 1; // outer while increments
+            continue;
+        }
+
         // Normalize TeX-style double quotes (`` and '' → ").
         if ((ch.codepoint == '`' or ch.codepoint == '\'') and i + 1 < chars.len and chars[i + 1].codepoint == ch.codepoint) {
             try self.emitPendingSpace(p);
@@ -280,6 +323,52 @@ fn closeStyles(self: *Self, p: *ParaState) void {
         self.writer.writeAll("**") catch {};
         p.in_bold = false;
     }
+}
+
+// A char is superscript if it's smaller than the line's dominant font AND its
+// baseline is raised above that of the dominant chars. Inline small monospace
+// (e.g. `gridDim.x`) sits on the baseline so it's not flagged.
+fn isSuper(chars: []const Char, idx: usize) bool {
+    const ch = chars[idx];
+    if (ch.codepoint <= 32) return false;
+    var max_size: f32 = 0;
+    for (chars) |c| {
+        if (c.codepoint > 32 and c.size > max_size) max_size = c.size;
+    }
+    if (max_size <= 0 or ch.size >= max_size * 0.85) return false;
+    var baseline: f32 = 0;
+    var n: f32 = 0;
+    for (chars) |c| {
+        if (c.codepoint > 32 and c.size >= max_size * 0.95) {
+            baseline += c.origin_y;
+            n += 1;
+        }
+    }
+    if (n == 0) return false;
+    return ch.origin_y < baseline / n - 1.0;
+}
+
+fn asSuperscript(cp: u32) ?u32 {
+    return switch (cp) {
+        '0' => 0x2070,
+        '1' => 0x00B9,
+        '2' => 0x00B2,
+        '3' => 0x00B3,
+        '4' => 0x2074,
+        '5' => 0x2075,
+        '6' => 0x2076,
+        '7' => 0x2077,
+        '8' => 0x2078,
+        '9' => 0x2079,
+        '+' => 0x207A,
+        '-' => 0x207B,
+        '=' => 0x207C,
+        '(' => 0x207D,
+        ')' => 0x207E,
+        'n' => 0x207F,
+        'i' => 0x2071,
+        else => null,
+    };
 }
 
 fn writeRune(w: *std.Io.Writer, rune: u32) !void {

@@ -25,6 +25,7 @@ typedef struct {
     unsigned char mono;
     unsigned char _pad;
     float size;
+    float origin_y; // baseline y in PDF coords (caller uses this for superscript detection)
 } fz_char_z;
 
 // Event kinds delivered to fz_extract_event_fn. The `chars`/`n` payload is non-NULL for LINE

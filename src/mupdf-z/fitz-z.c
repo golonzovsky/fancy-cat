@@ -204,6 +204,7 @@ static void extract_emit_line(fz_context *ctx, extract_state *st, fz_stext_line 
     out->mono = (unsigned char)md_is_mono(ctx, c);
     out->_pad = 0;
     out->size = c->size;
+    out->origin_y = c->origin.y;
   }
   st->on_event(st->event_userdata, FZ_EXTRACT_EVENT_LINE, st->line_buf, n, NULL);
 }
