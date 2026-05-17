@@ -92,7 +92,7 @@ fn flushBlock(self: *Self) !void {
         const ratio = max_size / self.body_size;
         const prefix: []const u8 = if (ratio >= 1.7) "# " else if (ratio >= 1.4) "## " else "### ";
         try self.writer.writeAll(prefix);
-        try self.emitHeadingLine(first_line);
+        try self.emitPlainChars(first_line, true);
         try self.writer.writeAll("\n\n");
         body_start = 1;
         if (body_start >= self.line_offsets.items.len) return;
@@ -110,7 +110,7 @@ fn lineSlice(self: *const Self, i: usize) []const Char {
 fn blockIsAllMono(chars: []const Char) bool {
     var saw_any = false;
     for (chars) |ch| {
-        if (ch.codepoint <= 32 or ch.codepoint == 0xFFFD or ch.codepoint == 0x00AD) continue;
+        if (ch.codepoint <= 32 or isInvisible(ch.codepoint)) continue;
         saw_any = true;
         if (ch.mono == 0) return false;
     }
@@ -129,34 +129,29 @@ fn closeCodeBlock(self: *Self) void {
     self.in_code_block = false;
 }
 
-fn emitCode(self: *Self) !void {
-    var i: usize = 0;
-    while (i < self.line_offsets.items.len) : (i += 1) {
-        for (self.lineSlice(i)) |ch| {
-            if (ch.codepoint == 0xFFFD or ch.codepoint == 0x00AD) continue;
-            if (ch.codepoint <= 32) {
-                try self.writer.writeByte(' ');
-                continue;
-            }
-            try writeRune(self.writer, ch.codepoint);
-        }
-        try self.writer.writeByte('\n');
-    }
-}
-
-fn emitHeadingLine(self: *Self, chars: []const Char) !void {
-    var last_was_space = true; // suppress leading space
+// Emit chars with no styling markers; `dedupe_space` collapses runs of
+// whitespace into a single space (used for headings; code blocks preserve
+// indentation so they pass false).
+fn emitPlainChars(self: *Self, chars: []const Char, dedupe_space: bool) !void {
+    var last_space = true;
     for (chars) |ch| {
-        if (ch.codepoint == 0xFFFD or ch.codepoint == 0x00AD) continue;
+        if (isInvisible(ch.codepoint)) continue;
         if (ch.codepoint <= 32) {
-            if (!last_was_space) {
+            if (!dedupe_space or !last_space) {
                 try self.writer.writeByte(' ');
-                last_was_space = true;
+                last_space = true;
             }
             continue;
         }
         try writeRune(self.writer, ch.codepoint);
-        last_was_space = false;
+        last_space = false;
+    }
+}
+
+fn emitCode(self: *Self) !void {
+    for (0..self.line_offsets.items.len) |i| {
+        try self.emitPlainChars(self.lineSlice(i), false);
+        try self.writer.writeByte('\n');
     }
 }
 
@@ -168,7 +163,7 @@ fn emitParagraph(self: *Self, start_line: usize) !void {
         try self.emitParaLine(&pp, line);
         if (li + 1 < self.line_offsets.items.len and !pp.last_was_space) pp.pending_space = true;
     }
-    self.closeStyles(&pp);
+    try self.syncStyles(&pp, false, false, false);
     try self.writer.writeAll("\n\n");
 }
 
@@ -180,172 +175,136 @@ const ParaState = struct {
     pending_space: bool = false,
 };
 
+// Line-level discriminator for superscript detection — computed once per line.
+const LineMetrics = struct {
+    max_size: f32 = 0,
+    baseline_y: f32 = 0,
+    valid: bool = false,
+};
+
+fn computeMetrics(chars: []const Char) LineMetrics {
+    var m = LineMetrics{};
+    for (chars) |c| {
+        if (c.codepoint > 32 and c.size > m.max_size) m.max_size = c.size;
+    }
+    if (m.max_size <= 0) return m;
+    var sum: f32 = 0;
+    var n: f32 = 0;
+    for (chars) |c| {
+        if (c.codepoint > 32 and c.size >= m.max_size * 0.95) {
+            sum += c.origin_y;
+            n += 1;
+        }
+    }
+    if (n == 0) return m;
+    m.baseline_y = sum / n;
+    m.valid = true;
+    return m;
+}
+
+fn isSuper(ch: Char, m: LineMetrics) bool {
+    if (!m.valid or ch.codepoint <= 32) return false;
+    if (ch.size >= m.max_size * 0.85) return false;
+    return ch.origin_y < m.baseline_y - 1.0;
+}
+
+fn isInvisible(cp: u32) bool {
+    return cp == 0xFFFD or cp == 0x00AD;
+}
+
 fn emitParaLine(self: *Self, p: *ParaState, chars: []const Char) !void {
+    const metrics = computeMetrics(chars);
     var i: usize = 0;
     while (i < chars.len) : (i += 1) {
         const ch = chars[i];
-        if (ch.codepoint == 0xFFFD or ch.codepoint == 0x00AD) continue;
+        if (isInvisible(ch.codepoint)) continue;
         if (ch.codepoint <= 32) {
             if (!p.last_was_space) p.pending_space = true;
             continue;
         }
-
-        // Superscript run: scan ahead for the run's end. If every char maps to a
-        // Unicode superscript glyph, emit each translated. Otherwise wrap the
-        // run in <sup>...</sup> so renderers can still surface it.
-        if (isSuper(chars, i)) {
-            var j = i;
-            while (j < chars.len and isSuper(chars, j) and chars[j].codepoint > 32) : (j += 1) {}
-            const run = chars[i..j];
-            var all_translatable = true;
-            for (run) |sch| {
-                if (asSuperscript(sch.codepoint) == null) {
-                    all_translatable = false;
-                    break;
-                }
-            }
-
-            // Close emph before the pending space if the run's first char ends a styled run.
-            if (p.pending_space) {
-                if (p.in_mono and run[0].mono == 0) { try self.writer.writeByte('`'); p.in_mono = false; }
-                if (p.in_italic and run[0].italic == 0) { try self.writer.writeByte('*'); p.in_italic = false; }
-                if (p.in_bold and run[0].bold == 0) { try self.writer.writeAll("**"); p.in_bold = false; }
-                try self.writer.writeByte(' ');
-                p.last_was_space = true;
-                p.pending_space = false;
-            }
-            // Close any open mono span around <sup> — markdown ignores tags inside `code`.
-            if (!all_translatable and p.in_mono) {
-                try self.writer.writeByte('`');
-                p.in_mono = false;
-            }
-
-            if (all_translatable) {
-                for (run) |sch| try writeRune(self.writer, asSuperscript(sch.codepoint).?);
-            } else {
-                try self.writer.writeAll("<sup>");
-                for (run) |sch| try writeRune(self.writer, sch.codepoint);
-                try self.writer.writeAll("</sup>");
-            }
-            p.last_was_space = false;
-            i = j - 1; // outer while increments
-            continue;
-        }
-
-        // Normalize TeX-style double quotes (`` and '' → ").
-        if ((ch.codepoint == '`' or ch.codepoint == '\'') and i + 1 < chars.len and chars[i + 1].codepoint == ch.codepoint) {
-            try self.emitPendingSpace(p);
-            if (p.in_mono) {
-                try self.writer.writeByte('`');
-                p.in_mono = false;
-            }
-            try self.writer.writeByte('"');
-            p.last_was_space = false;
-            i += 1;
-            continue;
-        }
-        var rune: u32 = ch.codepoint;
-        if (rune == '`') rune = '\''; // lone backtick → apostrophe
-
-        const bold = ch.bold != 0;
-        const italic = ch.italic != 0;
-        const mono = ch.mono != 0;
-
-        if (p.pending_space) {
-            // Close emph BEFORE the space so the closing marker isn't preceded by whitespace.
-            if (p.in_mono and !mono) {
-                try self.writer.writeByte('`');
-                p.in_mono = false;
-            }
-            if (p.in_italic and !italic) {
-                try self.writer.writeByte('*');
-                p.in_italic = false;
-            }
-            if (p.in_bold and !bold) {
-                try self.writer.writeAll("**");
-                p.in_bold = false;
-            }
-            try self.writer.writeByte(' ');
-            p.last_was_space = true;
-            p.pending_space = false;
-        }
-
-        try self.syncStyles(p, bold, italic, mono);
-        try writeRune(self.writer, rune);
-        p.last_was_space = false;
+        if (try self.tryEmitSuperscript(p, chars, &i, metrics)) continue;
+        if (try self.tryEmitTexQuote(p, chars, &i)) continue;
+        try self.emitChar(p, ch);
     }
 }
 
-fn emitPendingSpace(self: *Self, p: *ParaState) !void {
+// Emit a run of consecutive superscript chars (Unicode glyphs when all in our
+// digit/symbol map, `<sup>…</sup>` fallback otherwise). Advances `*idx` past the
+// run. Returns true if a run was emitted.
+fn tryEmitSuperscript(self: *Self, p: *ParaState, chars: []const Char, idx: *usize, m: LineMetrics) !bool {
+    if (!isSuper(chars[idx.*], m)) return false;
+    var j = idx.*;
+    while (j < chars.len and isSuper(chars[j], m)) : (j += 1) {}
+    const run = chars[idx.*..j];
+
+    var all_translatable = true;
+    for (run) |sch| {
+        if (asSuperscript(sch.codepoint) == null) { all_translatable = false; break; }
+    }
+
+    try self.flushPendingSpace(p, run[0].bold != 0, run[0].italic != 0, run[0].mono != 0);
+    if (!all_translatable and p.in_mono) {
+        try self.writer.writeByte('`');
+        p.in_mono = false;
+    }
+    if (all_translatable) {
+        for (run) |sch| try writeRune(self.writer, asSuperscript(sch.codepoint).?);
+    } else {
+        try self.writer.writeAll("<sup>");
+        for (run) |sch| try writeRune(self.writer, sch.codepoint);
+        try self.writer.writeAll("</sup>");
+    }
+    p.last_was_space = false;
+    idx.* = j - 1; // outer loop increments
+    return true;
+}
+
+// Normalize TeX-style double quotes (`` and '' → "). Advances `*idx` past the
+// second char of the pair when consumed.
+fn tryEmitTexQuote(self: *Self, p: *ParaState, chars: []const Char, idx: *usize) !bool {
+    const ch = chars[idx.*];
+    if (ch.codepoint != '`' and ch.codepoint != '\'') return false;
+    if (idx.* + 1 >= chars.len or chars[idx.* + 1].codepoint != ch.codepoint) return false;
+    // Close mono around the literal " — markdown's `code` would swallow it.
+    try self.flushPendingSpace(p, p.in_bold, p.in_italic, false);
+    try self.writer.writeByte('"');
+    p.last_was_space = false;
+    idx.* += 1;
+    return true;
+}
+
+fn emitChar(self: *Self, p: *ParaState, ch: Char) !void {
+    const rune: u32 = if (ch.codepoint == '`') '\'' else ch.codepoint; // lone ` → '
+    const bold = ch.bold != 0;
+    const italic = ch.italic != 0;
+    const mono = ch.mono != 0;
+    try self.flushPendingSpace(p, bold, italic, mono);
+    try self.syncStyles(p, bold, italic, mono);
+    try writeRune(self.writer, rune);
+    p.last_was_space = false;
+}
+
+// Emit a deferred space, closing any emph that would otherwise leave a marker
+// preceded by whitespace (CommonMark rejects `**foo **`). Caller passes the
+// styles of the upcoming char so transitions out of the run close before the
+// space, and styles that continue stay open.
+fn flushPendingSpace(self: *Self, p: *ParaState, next_bold: bool, next_italic: bool, next_mono: bool) !void {
     if (!p.pending_space) return;
+    if (p.in_mono and !next_mono) { try self.writer.writeByte('`'); p.in_mono = false; }
+    if (p.in_italic and !next_italic) { try self.writer.writeByte('*'); p.in_italic = false; }
+    if (p.in_bold and !next_bold) { try self.writer.writeAll("**"); p.in_bold = false; }
     try self.writer.writeByte(' ');
-    p.pending_space = false;
     p.last_was_space = true;
+    p.pending_space = false;
 }
 
 fn syncStyles(self: *Self, p: *ParaState, bold: bool, italic: bool, mono: bool) !void {
-    if (p.in_mono and !mono) {
-        try self.writer.writeByte('`');
-        p.in_mono = false;
-    }
-    if (p.in_italic and !italic) {
-        try self.writer.writeByte('*');
-        p.in_italic = false;
-    }
-    if (p.in_bold and !bold) {
-        try self.writer.writeAll("**");
-        p.in_bold = false;
-    }
-    if (!p.in_bold and bold) {
-        try self.writer.writeAll("**");
-        p.in_bold = true;
-    }
-    if (!p.in_italic and italic) {
-        try self.writer.writeByte('*');
-        p.in_italic = true;
-    }
-    if (!p.in_mono and mono) {
-        try self.writer.writeByte('`');
-        p.in_mono = true;
-    }
-}
-
-fn closeStyles(self: *Self, p: *ParaState) void {
-    if (p.in_mono) {
-        self.writer.writeByte('`') catch {};
-        p.in_mono = false;
-    }
-    if (p.in_italic) {
-        self.writer.writeByte('*') catch {};
-        p.in_italic = false;
-    }
-    if (p.in_bold) {
-        self.writer.writeAll("**") catch {};
-        p.in_bold = false;
-    }
-}
-
-// A char is superscript if it's smaller than the line's dominant font AND its
-// baseline is raised above that of the dominant chars. Inline small monospace
-// (e.g. `gridDim.x`) sits on the baseline so it's not flagged.
-fn isSuper(chars: []const Char, idx: usize) bool {
-    const ch = chars[idx];
-    if (ch.codepoint <= 32) return false;
-    var max_size: f32 = 0;
-    for (chars) |c| {
-        if (c.codepoint > 32 and c.size > max_size) max_size = c.size;
-    }
-    if (max_size <= 0 or ch.size >= max_size * 0.85) return false;
-    var baseline: f32 = 0;
-    var n: f32 = 0;
-    for (chars) |c| {
-        if (c.codepoint > 32 and c.size >= max_size * 0.95) {
-            baseline += c.origin_y;
-            n += 1;
-        }
-    }
-    if (n == 0) return false;
-    return ch.origin_y < baseline / n - 1.0;
+    if (p.in_mono and !mono) { try self.writer.writeByte('`'); p.in_mono = false; }
+    if (p.in_italic and !italic) { try self.writer.writeByte('*'); p.in_italic = false; }
+    if (p.in_bold and !bold) { try self.writer.writeAll("**"); p.in_bold = false; }
+    if (!p.in_bold and bold) { try self.writer.writeAll("**"); p.in_bold = true; }
+    if (!p.in_italic and italic) { try self.writer.writeByte('*'); p.in_italic = true; }
+    if (!p.in_mono and mono) { try self.writer.writeByte('`'); p.in_mono = true; }
 }
 
 fn asSuperscript(cp: u32) ?u32 {
