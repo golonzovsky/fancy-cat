@@ -175,11 +175,12 @@ const ParaState = struct {
     pending_space: bool = false,
 };
 
-// Line-level discriminator for superscript detection — computed once per line.
+// Per-line discriminator for superscript detection. Just `max_size` is cached
+// here; the relevant baseline is computed per-char against the *nearest*
+// body-size neighbor (mupdf sometimes groups two visual lines into one stext
+// line, so a line-wide average is unreliable).
 const LineMetrics = struct {
     max_size: f32 = 0,
-    baseline_y: f32 = 0,
-    valid: bool = false,
 };
 
 fn computeMetrics(chars: []const Char) LineMetrics {
@@ -187,29 +188,32 @@ fn computeMetrics(chars: []const Char) LineMetrics {
     for (chars) |c| {
         if (c.codepoint > 32 and c.size > m.max_size) m.max_size = c.size;
     }
-    if (m.max_size <= 0) return m;
-    var sum: f32 = 0;
-    var n: f32 = 0;
-    for (chars) |c| {
-        if (c.codepoint > 32 and c.size >= m.max_size * 0.95) {
-            sum += c.origin_y;
-            n += 1;
-        }
-    }
-    if (n == 0) return m;
-    m.baseline_y = sum / n;
-    m.valid = true;
     return m;
 }
 
-fn isSuper(ch: Char, m: LineMetrics) bool {
-    if (!m.valid or ch.codepoint <= 32) return false;
+fn isSuper(chars: []const Char, idx: usize, m: LineMetrics) bool {
+    const ch = chars[idx];
+    if (m.max_size <= 0 or ch.codepoint <= 32) return false;
     if (ch.size >= m.max_size * 0.85) return false;
-    return ch.origin_y < m.baseline_y - 1.0;
+    // Use the closest body-size char's baseline as reference.
+    var best_dist: usize = std.math.maxInt(usize);
+    var baseline: f32 = 0;
+    for (chars, 0..) |c, i| {
+        if (c.codepoint <= 32 or c.size < m.max_size * 0.95) continue;
+        const dist = if (i > idx) i - idx else idx - i;
+        if (dist < best_dist) {
+            best_dist = dist;
+            baseline = c.origin_y;
+        }
+    }
+    if (best_dist == std.math.maxInt(usize)) return false;
+    return ch.origin_y < baseline - 1.0;
 }
 
 fn isInvisible(cp: u32) bool {
-    return cp == 0xFFFD or cp == 0x00AD;
+    return cp == 0xFFFD // replacement char
+        or cp == 0x00AD // soft hyphen
+        or (cp >= 0xFE00 and cp <= 0xFE0F); // variation selectors
 }
 
 fn emitParaLine(self: *Self, p: *ParaState, chars: []const Char) !void {
@@ -232,9 +236,9 @@ fn emitParaLine(self: *Self, p: *ParaState, chars: []const Char) !void {
 // digit/symbol map, `<sup>…</sup>` fallback otherwise). Advances `*idx` past the
 // run. Returns true if a run was emitted.
 fn tryEmitSuperscript(self: *Self, p: *ParaState, chars: []const Char, idx: *usize, m: LineMetrics) !bool {
-    if (!isSuper(chars[idx.*], m)) return false;
+    if (!isSuper(chars, idx.*, m)) return false;
     var j = idx.*;
-    while (j < chars.len and isSuper(chars[j], m)) : (j += 1) {}
+    while (j < chars.len and isSuper(chars, j, m)) : (j += 1) {}
     const run = chars[idx.*..j];
 
     var all_translatable = true;

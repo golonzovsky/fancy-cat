@@ -131,10 +131,6 @@ pub fn getOddShiftX(self: *Self) i32 {
     return self.pdf_handler.odd_shift_x;
 }
 
-pub fn getPageShiftX(self: *Self, page: u16) i32 {
-    return if (page % 2 == 1) self.pdf_handler.odd_shift_x else 0;
-}
-
 pub fn setCurrentPage(self: *Self, page: u16) void {
     self.current_page_number = page;
 }
@@ -178,10 +174,6 @@ pub fn writePagesText(
 
 pub fn resetDefaultZoom(self: *Self) void {
     self.pdf_handler.resetDefaultZoom();
-}
-
-pub fn resetZoomAndScroll(self: *Self) void {
-    self.pdf_handler.resetZoomAndScroll();
 }
 
 pub fn toggleWidthMode(self: *Self) void {
@@ -243,4 +235,3 @@ pub fn getScrollX(self: *Self) i32 {
 pub fn getScrollY(self: *Self) i32 {
     return self.pdf_handler.pix_scroll_y;
 }
-

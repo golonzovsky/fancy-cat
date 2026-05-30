@@ -57,7 +57,6 @@ pub const Context = struct {
     should_quit: bool,
     tty: vaxis.Tty,
     vx: vaxis.Vaxis,
-    mouse: ?vaxis.Mouse,
     document_handler: DocumentHandler,
     page_info_text: []u8,
     current_page: ?vaxis.Image,
@@ -68,7 +67,6 @@ pub const Context = struct {
     current_mode: Mode,
     history: History,
     positions: Positions,
-    doc_path: []const u8,
     doc_key: []u8,
     reload_page: bool,
     cache: Cache,
@@ -109,17 +107,19 @@ pub const Context = struct {
         var positions = Positions.init(allocator, io, env, config, doc_key);
         errdefer positions.deinit();
         if (initial_page == null) {
-            if (positions.getSavedPosition()) |pos| {
+            if (positions.getSavedPositionForKey(document_handler.getPath())) |pos| {
                 if (pos.page < document_handler.getTotalPages()) {
                     document_handler.setCurrentPage(pos.page);
+                    config.general.colorize = pos.colorize;
+                    // Crop first: toggleCropToContent resets zoom/scroll, so it must
+                    // run before we restore them or it wipes the restored values.
+                    if (pos.crop != document_handler.getCropToContent()) {
+                        document_handler.toggleCropToContent();
+                    }
                     document_handler.setScrollX(pos.scroll_x);
                     document_handler.setScrollY(pos.scroll_y);
                     if (pos.zoom > 0) document_handler.setActiveZoom(pos.zoom);
                     document_handler.setOddShiftX(pos.odd_shift_x);
-                    config.general.colorize = pos.colorize;
-                    if (pos.crop != document_handler.getCropToContent()) {
-                        document_handler.toggleCropToContent();
-                    }
                 }
             }
         }
@@ -151,14 +151,12 @@ pub const Context = struct {
             .page_info_text = &[_]u8{},
             .current_page = null,
             .watcher = watcher,
-            .mouse = null,
             .watcher_thread = null,
             .config = config,
             .loop = null,
             .current_mode = undefined,
             .history = history,
             .positions = positions,
-            .doc_path = path,
             .doc_key = doc_key,
             .reload_page = true,
             .cache = Cache.init(allocator, config, vx, &tty),
@@ -180,7 +178,7 @@ pub const Context = struct {
         };
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn saveState(self: *Self) void {
         self.positions.save(.{
             .page = self.document_handler.getCurrentPageNumber(),
             .scroll_x = self.document_handler.getScrollX(),
@@ -191,6 +189,10 @@ pub const Context = struct {
             .crop = self.document_handler.getCropToContent(),
             .hlock = self.lock_horizontal_scroll,
         }, self.marks.items);
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.saveState();
         for (self.marks.items) |m| {
             if (m.comment.len > 0) self.allocator.free(m.comment);
         }
@@ -272,8 +274,10 @@ pub const Context = struct {
         while (!self.should_quit) {
             try loop.pollEvent();
 
+            var had_event = false;
             while (try loop.tryEvent()) |event| {
                 try self.update(event);
+                had_event = true;
             }
 
             try self.draw();
@@ -281,6 +285,11 @@ pub const Context = struct {
             var buffered = self.tty.writer();
             try self.vx.render(buffered);
             try buffered.flush();
+
+            // Persist position/zoom after any state-changing batch — draw() above
+            // has already finalized active_zoom — so it survives a non-clean exit
+            // (terminal closed, killed) without waiting for deinit on quit.
+            if (had_event) self.saveState();
         }
     }
 
@@ -328,7 +337,6 @@ pub const Context = struct {
         switch (event) {
             .key_press => |key| try self.handleKeyStroke(key),
             .mouse => |mouse| {
-                self.mouse = mouse;
                 if (self.current_mode == .toc) {
                     self.current_mode.toc.handleMouse(mouse);
                     return;
@@ -630,7 +638,6 @@ pub const Context = struct {
     }
 
     pub fn jumpBack(self: *Self) void {
-        if (self.jump_back.items.len == 0) return;
         const target = self.jump_back.pop() orelse return;
         const here = self.currentPosition();
         self.jump_forward.append(self.allocator, here) catch {};
@@ -638,7 +645,6 @@ pub const Context = struct {
     }
 
     pub fn jumpForward(self: *Self) void {
-        if (self.jump_forward.items.len == 0) return;
         const target = self.jump_forward.pop() orelse return;
         const here = self.currentPosition();
         self.jump_back.append(self.allocator, here) catch {};
@@ -711,7 +717,7 @@ pub const Context = struct {
 
         std.Io.Dir.createDirAbsolute(self.io, dir, .default_dir) catch {};
         try self.document_handler.writePageText(page, path);
-        try self.spawnEditorAndWait(path, dir);
+        try self.spawnEditorAndWait(path, dir, null);
     }
 
     fn currentChapterRange(self: *Self, current_page: u16) struct { start: u16, end: u16 } {
@@ -760,22 +766,62 @@ pub const Context = struct {
         w.flush() catch return;
     }
 
+    fn extractRangeToEditor(self: *Self, dir: []const u8, name: []const u8, start: u16, end: u16) !void {
+        const path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/{s}", .{ dir, name }, 0);
+        defer self.allocator.free(path);
+
+        std.Io.Dir.createDirAbsolute(self.io, dir, .default_dir) catch {};
+        try self.document_handler.writePagesText(start, end, path, progressCallback, self);
+        self.progress_text = null;
+        try self.spawnEditorAndWait(path, dir, null);
+    }
+
     pub fn openCurrentChapterInEditor(self: *Self) !void {
         const page = self.document_handler.getCurrentPageNumber();
         const range = self.currentChapterRange(page);
         const pid = std.c.getpid();
         const dir = try std.fmt.allocPrint(self.allocator, "/tmp/fancy-cat-{d}-chap-{d}-{d}", .{ pid, range.start + 1, range.end });
         defer self.allocator.free(dir);
-        const path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/chap-{d}-{d}.md", .{ dir, range.start + 1, range.end }, 0);
+        const name = try std.fmt.allocPrint(self.allocator, "chap-{d}-{d}.md", .{ range.start + 1, range.end });
+        defer self.allocator.free(name);
+
+        try self.extractRangeToEditor(dir, name, range.start, range.end);
+    }
+
+    pub fn openOutlineInEditor(self: *Self, selected_index: ?usize) !void {
+        const entries = self.document_handler.loadOutline(self.allocator) catch return;
+        defer {
+            for (entries) |e| self.allocator.free(e.title);
+            self.allocator.free(entries);
+        }
+        if (entries.len == 0) return;
+
+        const pid = std.c.getpid();
+        const dir = try std.fmt.allocPrint(self.allocator, "/tmp/fancy-cat-{d}-toc", .{pid});
+        defer self.allocator.free(dir);
+        const path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/toc.md", .{dir}, 0);
         defer self.allocator.free(path);
 
         std.Io.Dir.createDirAbsolute(self.io, dir, .default_dir) catch {};
-        try self.document_handler.writePagesText(range.start, range.end, path, progressCallback, self);
-        self.progress_text = null;
-        try self.spawnEditorAndWait(path, dir);
+        {
+            var file = try std.Io.Dir.createFileAbsolute(self.io, path, .{});
+            defer file.close(self.io);
+            var buf: [4096]u8 = undefined;
+            var fw = file.writer(self.io, &buf);
+            const w = &fw.interface;
+            try w.writeAll("# Table of Contents\n\n");
+            for (entries) |e| {
+                var k: usize = 0;
+                while (k < @as(usize, e.depth) * 2) : (k += 1) try w.writeByte(' ');
+                try w.print("- {s}  (p.{d})\n", .{ e.title, e.page + 1 });
+            }
+            try w.flush();
+        }
+        const line: ?usize = if (selected_index) |i| i + 3 else null; // header is 2 lines; entries start at line 3
+        try self.spawnEditorAndWait(path, dir, line);
     }
 
-    fn spawnEditorAndWait(self: *Self, path: [:0]const u8, dir: []const u8) !void {
+    fn spawnEditorAndWait(self: *Self, path: [:0]const u8, dir: []const u8, line: ?usize) !void {
         var writer = self.tty.writer();
         try self.vx.setMouseMode(writer, false);
         try self.vx.exitAltScreen(writer);
@@ -790,6 +836,24 @@ pub const Context = struct {
         defer argv.deinit(self.allocator);
         var it = std.mem.tokenizeAny(u8, editor_raw, &std.ascii.whitespace);
         while (it.next()) |tok| try argv.append(self.allocator, tok);
+
+        // Jump vim-family editors to a specific line (e.g. the TOC's selected
+        // chapter). `+N` is understood by vi/vim/nvim/nano/emacs; skip it for
+        // others (e.g. `code` would treat `+N` as a filename).
+        var line_buf: ?[]u8 = null;
+        defer if (line_buf) |lb| self.allocator.free(lb);
+        if (line) |n| {
+            if (argv.items.len > 0) {
+                const base = std.fs.path.basename(argv.items[0]);
+                const is_vi = std.mem.eql(u8, base, "vim") or std.mem.eql(u8, base, "nvim") or
+                    std.mem.eql(u8, base, "vi") or std.mem.eql(u8, base, "nano") or
+                    std.mem.eql(u8, base, "emacs") or std.mem.eql(u8, base, "emacsclient");
+                if (is_vi) {
+                    line_buf = try std.fmt.allocPrint(self.allocator, "+{d}", .{n});
+                    try argv.append(self.allocator, line_buf.?);
+                }
+            }
+        }
         try argv.append(self.allocator, path);
 
         var child = try std.process.spawn(self.io, .{

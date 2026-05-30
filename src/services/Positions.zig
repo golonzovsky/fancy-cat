@@ -67,8 +67,19 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn getSavedPosition(self: *Self) ?Position {
+    return self.lookupKey(self.doc_path);
+}
+
+// Tries the canonical doc key first, then an alternate (e.g. the document's
+// raw path) — heals positions saved by an older version that keyed by path
+// before PDF-id keying existed. The next save rewrites under the canonical key.
+pub fn getSavedPositionForKey(self: *Self, alt_key: []const u8) ?Position {
+    return self.lookupKey(self.doc_path) orelse self.lookupKey(alt_key);
+}
+
+fn lookupKey(self: *Self, key: []const u8) ?Position {
     if (!self.have_data) return null;
-    const entry = self.all.value.object.get(self.doc_path) orelse return null;
+    const entry = self.all.value.object.get(key) orelse return null;
     if (entry != .object) return null;
 
     var pos = Position{};
@@ -180,10 +191,17 @@ pub fn save(self: *Self, pos: Position, marks: []const Mark) void {
     root.put(a, self.doc_path, .{ .object = entry }) catch return;
 
     const json_str = std.json.Stringify.valueAlloc(a, std.json.Value{ .object = root }, .{ .whitespace = .indent_2 }) catch return;
-    var file = cwd.createFile(self.io, self.file_path, .{}) catch return;
-    defer file.close(self.io);
-    var buf: [4096]u8 = undefined;
-    var fw = file.writer(self.io, &buf);
-    fw.interface.writeAll(json_str) catch return;
-    fw.interface.flush() catch return;
+
+    // Write to a temp file then atomically rename, so a kill mid-write (or a
+    // frequent in-loop save) can never leave a truncated positions.json.
+    const tmp_path = std.fmt.allocPrint(a, "{s}.tmp", .{self.file_path}) catch return;
+    {
+        var file = cwd.createFile(self.io, tmp_path, .{}) catch return;
+        defer file.close(self.io);
+        var buf: [4096]u8 = undefined;
+        var fw = file.writer(self.io, &buf);
+        fw.interface.writeAll(json_str) catch return;
+        fw.interface.flush() catch return;
+    }
+    std.Io.Dir.renameAbsolute(tmp_path, self.file_path, self.io) catch return;
 }

@@ -110,7 +110,7 @@ pub fn put(self: *Self, key: Key, image: CachedImage) !bool {
     return true;
 }
 
-pub fn remove(self: *Self, key: Key) bool {
+fn remove(self: *Self, key: Key) bool {
     const node = self.map.get(key) orelse return false;
     _ = self.map.remove(key);
 

@@ -30,16 +30,6 @@ fz_link *fz_load_links_z(fz_context *ctx, fz_page *page) {
   return links;
 }
 
-int fz_resolve_link_page_z(fz_context *ctx, fz_document *doc, const char *uri) {
-  int page = -1;
-  fz_try(ctx) {
-    fz_location loc = fz_resolve_link(ctx, doc, uri, NULL, NULL);
-    page = fz_page_number_from_location(ctx, doc, loc);
-  }
-  fz_catch(ctx) {}
-  return page;
-}
-
 int fz_resolve_link_target_z(fz_context *ctx, fz_document *doc, const char *uri, float *yp) {
   int page = -1;
   float x = 0, y = 0;

@@ -133,6 +133,11 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
         self.toggleCurrent();
         return;
     }
+    if (key.matches(km.open_in_editor.codepoint, km.open_in_editor.mods)) {
+        const idx: ?usize = if (self.cursor < self.visible.items.len) self.visible.items[self.cursor] else null;
+        self.context.openOutlineInEditor(idx) catch {};
+        return;
+    }
     if (key.matches(vaxis.Key.enter, .{})) {
         const e = self.entries[self.visible.items[self.cursor]];
         self.context.changeMode(.view);
@@ -232,7 +237,7 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     const popup = win.child(.{ .x_off = x_off, .y_off = y_off, .width = w, .height = h });
 
     _ = popup.print(
-        &.{.{ .text = " Table of Contents (Enter: jump, h/l: collapse/expand, Esc: close) ", .style = title_style }},
+        &.{.{ .text = " Table of Contents (Enter: jump, h/l: fold, e: editor, Esc: close) ", .style = title_style }},
         .{ .row_offset = 0, .col_offset = 0 },
     );
 

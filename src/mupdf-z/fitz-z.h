@@ -4,8 +4,7 @@ fz_document *fz_open_document_z(fz_context *ctx, const char *filename);
 int fz_count_pages_z(fz_context *ctx, fz_document *doc);
 fz_page *fz_load_page_z(fz_context *ctx, fz_document *doc, int page_number);
 fz_link *fz_load_links_z(fz_context *ctx, fz_page *page);
-int fz_resolve_link_page_z(fz_context *ctx, fz_document *doc, const char *uri);
-// Like fz_resolve_link_page_z but also outputs the destination y in PDF units (0 if unknown).
+// Resolves a link URI to a page index, also outputting the destination y in PDF units (0 if unknown).
 int fz_resolve_link_target_z(fz_context *ctx, fz_document *doc, const char *uri, float *yp);
 // Walks the document outline, invoking cb for each entry in pre-order.
 typedef void (*fz_outline_visit_fn)(void *userdata, const char *title, int depth, const char *uri);

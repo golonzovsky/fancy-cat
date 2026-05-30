@@ -1,7 +1,6 @@
 const Self = @This();
 const std = @import("std");
 const fastb64z = @import("fastb64z");
-const vaxis = @import("vaxis");
 const Config = @import("../config/Config.zig");
 const types = @import("./types.zig");
 const Utilities = @import("../utilities/Utilities.zig");
@@ -269,17 +268,8 @@ fn maxScrollX(self: *const Self, viewport_w: u32) i32 {
     return 0;
 }
 
-fn maxScrollY(self: *const Self, viewport_h: u32) i32 {
-    if (self.rendered_h > viewport_h) return @intCast(self.rendered_h - viewport_h);
-    return 0;
-}
-
 pub fn clampScrollX(self: *Self, viewport_w: u32) void {
     self.pix_scroll_x = @max(0, @min(self.maxScrollX(viewport_w), self.pix_scroll_x));
-}
-
-pub fn currentMaxScrollY(self: *const Self, viewport_h: u32) i32 {
-    return self.maxScrollY(viewport_h);
 }
 
 pub fn zoomIn(self: *Self) void {
@@ -332,12 +322,6 @@ pub fn offsetScroll(self: *Self, dx: f32, dy: f32) void {
 
 pub fn resetDefaultZoom(self: *Self) void {
     self.default_zoom = 0;
-}
-
-pub fn resetZoomAndScroll(self: *Self) void {
-    self.active_zoom = self.default_zoom;
-    self.pix_scroll_x = 0;
-    self.pix_scroll_y = 0;
 }
 
 pub fn toggleWidthMode(self: *Self) void {
@@ -505,8 +489,7 @@ pub fn findLinkAtPoint(
         }
         var dest_y: f32 = 0;
         const resolved = c.fz_resolve_link_target_z(self.ctx, self.doc, link.uri, &dest_y);
-        if (resolved < 0) continue;
-        if (resolved >= self.total_pages) continue;
+        if (resolved < 0 or resolved >= self.total_pages) continue;
         return .{ .page = .{ .num = @as(u16, @intCast(resolved)), .y = dest_y } };
     }
     return null;
