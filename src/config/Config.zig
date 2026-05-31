@@ -232,8 +232,6 @@ general: General = .{},
 status_bar: StatusBar = .{},
 cache: Cache = .{},
 
-legacy_path: bool = false,
-
 pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map) Self {
     var self = Self{ .arena = std.heap.ArenaAllocator.init(allocator) };
     const arena_allocator = self.arena.allocator();
@@ -247,19 +245,12 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.
     defer allocator.free(path);
 
     const cwd = std.Io.Dir.cwd();
-    var content: ?[]u8 = cwd.readFileAlloc(io, path, allocator, .limited(1024 * 1024)) catch null;
+    const content: ?[]u8 = cwd.readFileAlloc(io, path, allocator, .limited(1024 * 1024)) catch null;
     if (content == null) {
-        const legacy_path = std.fmt.allocPrint(allocator, "{s}/.fancy-cat", .{home}) catch return self;
-        defer allocator.free(legacy_path);
-
-        content = cwd.readFileAlloc(io, legacy_path, allocator, .limited(1024 * 1024)) catch null;
-        if (content == null) {
-            if (std.fs.path.dirname(path)) |dir| cwd.createDirPath(io, dir) catch {};
-            const file = cwd.createFile(io, path, .{}) catch return self;
-            file.close(io);
-            return self;
-        }
-        self.legacy_path = true;
+        if (std.fs.path.dirname(path)) |dir| cwd.createDirPath(io, dir) catch {};
+        const file = cwd.createFile(io, path, .{}) catch return self;
+        file.close(io);
+        return self;
     }
     defer allocator.free(content.?);
 

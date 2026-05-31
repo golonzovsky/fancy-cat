@@ -42,11 +42,9 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.
 
     const home = env.get("HOME") orelse return self;
 
-    if (!config.legacy_path) {
-        if (env.get("XDG_STATE_HOME")) |x| {
-            self.file_path = std.fmt.allocPrint(allocator, "{s}/fancy-cat/positions.json", .{x}) catch return self;
-        } else self.file_path = std.fmt.allocPrint(allocator, "{s}/.local/state/fancy-cat/positions.json", .{home}) catch return self;
-    } else self.file_path = std.fmt.allocPrint(allocator, "{s}/.fancy-cat_positions", .{home}) catch return self;
+    if (env.get("XDG_STATE_HOME")) |x| {
+        self.file_path = std.fmt.allocPrint(allocator, "{s}/fancy-cat/positions.json", .{x}) catch return self;
+    } else self.file_path = std.fmt.allocPrint(allocator, "{s}/.local/state/fancy-cat/positions.json", .{home}) catch return self;
 
     const cwd = std.Io.Dir.cwd();
     const content = cwd.readFileAlloc(io, self.file_path, allocator, .limited(1024 * 1024)) catch return self;
