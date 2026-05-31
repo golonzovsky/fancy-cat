@@ -44,9 +44,7 @@ pending_scroll_pdf_y: ?f32,
 pix_scroll_x: i32,
 pix_scroll_y: i32,
 rendered_w: u32,
-rendered_h: u32,
 last_viewport_w: u32,
-last_viewport_h: u32,
 config: *Config,
 
 pub fn init(
@@ -91,9 +89,7 @@ pub fn init(
         .pix_scroll_x = 0,
         .pix_scroll_y = 0,
         .rendered_w = 0,
-        .rendered_h = 0,
         .last_viewport_w = 0,
-        .last_viewport_h = 0,
         .config = config,
     };
 }
@@ -241,9 +237,7 @@ pub fn renderPage(
         const encoded = base64Encoder.encode(b64_buf, samples[0..sample_count]);
 
         self.rendered_w = @intCast(width);
-        self.rendered_h = @intCast(height);
         self.last_viewport_w = window_width;
-        self.last_viewport_h = window_height;
 
         return types.EncodedImage{
             .base64 = encoded,
