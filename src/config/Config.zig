@@ -30,6 +30,7 @@ pub const KeyMap = struct {
     jump_forward: vaxis.Key = .{ .codepoint = vaxis.Key.tab },
     open_in_editor: vaxis.Key = .{ .codepoint = 'e' },
     open_chapter_in_editor: vaxis.Key = .{ .codepoint = 'E' },
+    show_help: vaxis.Key = .{ .codepoint = '?' },
 
     pub fn parse(val: std.json.Value, allocator: std.mem.Allocator) KeyMap {
         var keymap = KeyMap{};

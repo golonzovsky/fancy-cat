@@ -240,6 +240,15 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
                 }
             }.action,
         },
+        .{
+            .codepoint = km.show_help.codepoint,
+            .mods = km.show_help.mods,
+            .handler = struct {
+                fn action(s: *Context) void {
+                    s.changeMode(.help);
+                }
+            }.action,
+        },
     };
 
     for (key_actions) |action| {
