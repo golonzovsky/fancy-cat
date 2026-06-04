@@ -115,6 +115,7 @@ pub fn drawCommandBar(self: *Self, win: vaxis.Window) void {
 
 pub fn executeCommand(self: *Self, cmd: []const u8) void {
     if (self.handleQuit(cmd)) return;
+    if (self.handleHelp(cmd)) return;
     if (self.handleAltShift(cmd)) return;
     if (self.handleHLock(cmd)) return;
     if (self.handleMarks(cmd)) return;
@@ -196,6 +197,12 @@ fn handleAltShift(self: *Self, cmd: []const u8) bool {
 fn handleQuit(self: *Self, cmd: []const u8) bool {
     if (!std.mem.eql(u8, cmd, "q")) return false;
     self.context.should_quit = true;
+    return true;
+}
+
+fn handleHelp(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.eql(u8, cmd, "help")) return false;
+    self.context.changeMode(.help);
     return true;
 }
 

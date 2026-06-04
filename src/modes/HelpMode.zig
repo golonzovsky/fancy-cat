@@ -13,6 +13,25 @@ const Line = struct {
     label: []const u8 = "",
 };
 
+// `:` commands are not configurable, so this list is static.
+const cmd_lines = [_]Line{
+    .{ .header = true, .label = "Commands  (:)" },
+    .{ .keys = ":N", .label = "go to page N" },
+    .{ .keys = ":N%", .label = "zoom to N%" },
+    .{ .keys = ":y+N :y-N", .label = "scroll vertical" },
+    .{ .keys = ":x+N :x-N", .label = "scroll horizontal" },
+    .{ .keys = ":toc", .label = "table of contents" },
+    .{ .keys = ":marks", .label = "marks list" },
+    .{ .keys = ":mark a …", .label = "set mark + note" },
+    .{ .keys = ":delmark a", .label = "delete mark a" },
+    .{ .keys = ":edit", .label = "page in $EDITOR" },
+    .{ .keys = ":edit c", .label = "chapter in $EDITOR" },
+    .{ .keys = ":oddx N", .label = "shift odd pages N px" },
+    .{ .keys = ":hlock", .label = "lock horiz scroll" },
+    .{ .keys = ":help", .label = "this help" },
+    .{ .keys = ":q", .label = "quit" },
+};
+
 pub fn init(context: *Context) Self {
     return .{
         .context = context,
@@ -66,7 +85,7 @@ fn fmtKey(a: std.mem.Allocator, key: vaxis.Key) []const u8 {
     return a.dupe(u8, buf[0..i]) catch buf[0..i];
 }
 
-fn buildLines(self: *Self, a: std.mem.Allocator) []const Line {
+fn buildKeyLines(self: *Self, a: std.mem.Allocator) []const Line {
     const km = self.context.config.key_map;
     const lines = a.alloc(Line, 24) catch return &.{};
     var n: usize = 0;
@@ -86,7 +105,7 @@ fn buildLines(self: *Self, a: std.mem.Allocator) []const Line {
 
     add(lines, &n, .{ .header = true, .label = "Navigation" });
     add(lines, &n, .{ .keys = two(a, fmtKey(a, km.prev), fmtKey(a, km.next)), .label = "prev / next page" });
-    add(lines, &n, .{ .keys = std.fmt.allocPrint(a, "{s} {s} {s} {s}", .{ fmtKey(a, km.scroll_left), fmtKey(a, km.scroll_down), fmtKey(a, km.scroll_up), fmtKey(a, km.scroll_right) }) catch "", .label = "scroll left/down/up/right" });
+    add(lines, &n, .{ .keys = std.fmt.allocPrint(a, "{s} {s} {s} {s}", .{ fmtKey(a, km.scroll_left), fmtKey(a, km.scroll_down), fmtKey(a, km.scroll_up), fmtKey(a, km.scroll_right) }) catch "", .label = "scroll" });
     add(lines, &n, .{ .keys = two(a, fmtKey(a, km.jump_back), fmtKey(a, km.jump_forward)), .label = "jump back / forward" });
 
     add(lines, &n, .{ .header = true, .label = "View" });
@@ -97,14 +116,14 @@ fn buildLines(self: *Self, a: std.mem.Allocator) []const Line {
     add(lines, &n, .{ .keys = fmtKey(a, km.colorize), .label = "toggle invert" });
 
     add(lines, &n, .{ .header = true, .label = "Marks & contents" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.set_mark), .label = "set mark (then a-z)" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.jump_mark), .label = "jump to mark (then a-z)" });
+    add(lines, &n, .{ .keys = fmtKey(a, km.set_mark), .label = "set mark (a-z)" });
+    add(lines, &n, .{ .keys = fmtKey(a, km.jump_mark), .label = "jump to mark (a-z)" });
     add(lines, &n, .{ .keys = fmtKey(a, km.marks_mode), .label = "marks list" });
     add(lines, &n, .{ .keys = fmtKey(a, km.toc_mode), .label = "table of contents" });
 
     add(lines, &n, .{ .header = true, .label = "Editor & links" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.open_in_editor), .label = "page text in $EDITOR" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.open_chapter_in_editor), .label = "chapter text in $EDITOR" });
+    add(lines, &n, .{ .keys = fmtKey(a, km.open_in_editor), .label = "page in $EDITOR" });
+    add(lines, &n, .{ .keys = fmtKey(a, km.open_chapter_in_editor), .label = "chapter in $EDITOR" });
     add(lines, &n, .{ .keys = fmtKey(a, km.hint_mode), .label = "follow link (hints)" });
 
     add(lines, &n, .{ .header = true, .label = "General" });
@@ -115,14 +134,27 @@ fn buildLines(self: *Self, a: std.mem.Allocator) []const Line {
     return lines[0..n];
 }
 
+fn drawColumn(popup: vaxis.Window, lines: []const Line, base_x: u16, key_w: u16, max_h: u16, bg: vaxis.Cell.Style, head: vaxis.Cell.Style, key_style: vaxis.Cell.Style) void {
+    for (lines, 0..) |line, i| {
+        const row: u16 = @intCast(i + 2);
+        if (row >= max_h) break;
+        if (line.header) {
+            _ = popup.print(&.{.{ .text = line.label, .style = head }}, .{ .row_offset = row, .col_offset = base_x });
+        } else {
+            _ = popup.print(&.{.{ .text = line.keys, .style = key_style }}, .{ .row_offset = row, .col_offset = base_x + 1 });
+            _ = popup.print(&.{.{ .text = line.label, .style = bg }}, .{ .row_offset = row, .col_offset = base_x + key_w });
+        }
+    }
+}
+
 pub fn draw(self: *Self, win: vaxis.Window) void {
     _ = self.draw_arena.reset(.retain_capacity);
     const a = self.draw_arena.allocator();
-    const lines = self.buildLines(a);
+    const key_lines = self.buildKeyLines(a);
 
-    const key_col: u16 = 12;
-    const w: u16 = @min(@as(u16, win.width -| 4), 52);
-    const content_h: u16 = @intCast(lines.len + 2);
+    const right_base: u16 = 37;
+    const w: u16 = @min(@as(u16, win.width -| 4), 74);
+    const content_h: u16 = @intCast(@max(key_lines.len, cmd_lines.len) + 3);
     const max_h: u16 = @min(content_h, @as(u16, @intCast(@as(usize, win.height) -| 2)));
     const x_off = (win.width -| w) / 2;
     const y_off = (win.height -| max_h) / 2;
@@ -146,18 +178,10 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     popup.fill(.{ .char = .{ .grapheme = " ", .width = 1 }, .style = bg });
 
     _ = popup.print(
-        &.{.{ .text = " Keymap (any key to close) ", .style = head }},
+        &.{.{ .text = " Help — any key to close ", .style = head }},
         .{ .row_offset = 0, .col_offset = 1 },
     );
 
-    for (lines, 0..) |line, i| {
-        const row: u16 = @intCast(i + 2);
-        if (row >= max_h) break;
-        if (line.header) {
-            _ = popup.print(&.{.{ .text = line.label, .style = head }}, .{ .row_offset = row, .col_offset = 1 });
-        } else {
-            _ = popup.print(&.{.{ .text = line.keys, .style = key_style }}, .{ .row_offset = row, .col_offset = 2 });
-            _ = popup.print(&.{.{ .text = line.label, .style = bg }}, .{ .row_offset = row, .col_offset = key_col });
-        }
-    }
+    drawColumn(popup, key_lines, 1, 9, max_h, bg, head, key_style);
+    if (w > right_base + 8) drawColumn(popup, &cmd_lines, right_base, 12, max_h, bg, head, key_style);
 }
