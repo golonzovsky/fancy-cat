@@ -26,9 +26,11 @@ const cmd_lines = [_]Line{
     .{ .keys = ":delmark a", .label = "delete mark a" },
     .{ .keys = ":edit", .label = "page in $EDITOR" },
     .{ .keys = ":edit c", .label = "chapter in $EDITOR" },
-    .{ .keys = ":oddx N", .label = "shift odd pages N px" },
+    .{ .keys = ":oddx N", .label = "shift odd pages (pt)" },
     .{ .keys = ":hlock", .label = "lock horiz scroll" },
-    .{ .keys = ":spread", .label = "two-page spread" },
+    .{ .keys = ":spread", .label = "2-column spread" },
+    .{ .keys = ":crop L R", .label = "trim margins (pt)" },
+    .{ .keys = ":crop", .label = "reset margin trim" },
     .{ .keys = ":help", .label = "this help" },
     .{ .keys = ":q", .label = "quit" },
 };
@@ -109,7 +111,7 @@ fn buildKeyLines(self: *Self, a: std.mem.Allocator) []const Line {
     add(a, &lines, .{ .keys = two(a, fmtKey(a, km.zoom_in), fmtKey(a, km.zoom_out)), .label = "zoom in / out" });
     add(a, &lines, .{ .keys = fmtKey(a, km.width_mode), .label = "fit width" });
     add(a, &lines, .{ .keys = fmtKey(a, km.crop_to_content), .label = "crop to content" });
-    add(a, &lines, .{ .keys = fmtKey(a, km.toggle_spread), .label = "two-page spread" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.toggle_spread), .label = "2-column spread" });
     add(a, &lines, .{ .keys = fmtKey(a, km.full_screen), .label = "toggle status bar" });
     add(a, &lines, .{ .keys = fmtKey(a, km.colorize), .label = "toggle invert" });
 

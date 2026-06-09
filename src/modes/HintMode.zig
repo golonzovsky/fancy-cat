@@ -74,8 +74,8 @@ fn populate(self: *Self) !void {
         const links = self.context.document_handler.loadLinks(a, p.page_num) catch continue;
         defer a.free(links);
         for (links) |link| {
-            const odd_shift_pix: f32 = if (p.page_num % 2 == 1 and !self.context.document_handler.getSpread())
-                @floatFromInt(self.context.document_handler.getOddShiftX())
+            const odd_shift_pix: f32 = if (p.page_num % 2 == 1)
+                @as(f32, @floatFromInt(self.context.document_handler.getOddShiftX())) * zoom
             else
                 0;
             const pdf_x = link.rect.x0;

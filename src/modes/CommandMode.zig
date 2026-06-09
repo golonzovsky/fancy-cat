@@ -119,6 +119,7 @@ pub fn executeCommand(self: *Self, cmd: []const u8) void {
     if (self.handleAltShift(cmd)) return;
     if (self.handleHLock(cmd)) return;
     if (self.handleSpread(cmd)) return;
+    if (self.handleCrop(cmd)) return;
     if (self.handleMarks(cmd)) return;
     if (self.handleMarkComment(cmd)) return;
     if (self.handleDelMark(cmd)) return;
@@ -187,6 +188,36 @@ fn handleHLock(self: *Self, cmd: []const u8) bool {
 fn handleSpread(self: *Self, cmd: []const u8) bool {
     if (!std.mem.eql(u8, cmd, "spread")) return false;
     self.context.document_handler.toggleSpread();
+    self.context.resetCurrentPage();
+    return true;
+}
+
+// :crop          reset margins
+// :crop N        trim N pt on all sides
+// :crop L R      trim left/right
+// :crop L R T B  trim all four sides
+fn handleCrop(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.startsWith(u8, cmd, "crop")) return false;
+    const rest = std.mem.trim(u8, cmd["crop".len..], &std.ascii.whitespace);
+
+    var vals: [4]f32 = .{ 0, 0, 0, 0 };
+    var n: usize = 0;
+    var it = std.mem.tokenizeAny(u8, rest, &std.ascii.whitespace);
+    while (it.next()) |tok| {
+        if (n >= vals.len) return false;
+        vals[n] = std.fmt.parseFloat(f32, tok) catch return false;
+        n += 1;
+    }
+
+    const crop: [4]f32 = switch (n) {
+        0 => .{ 0, 0, 0, 0 },
+        1 => .{ vals[0], vals[0], vals[0], vals[0] },
+        2 => .{ vals[0], vals[1], 0, 0 },
+        4 => vals,
+        else => return false,
+    };
+    self.context.document_handler.setMarginCrop(crop[0], crop[1], crop[2], crop[3]);
+    self.context.cache.clear();
     self.context.resetCurrentPage();
     return true;
 }

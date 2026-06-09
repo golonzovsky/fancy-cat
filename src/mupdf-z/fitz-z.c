@@ -349,6 +349,38 @@ int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out) {
   return ok;
 }
 
+int fz_page_text_bbox_z(fz_context *ctx, fz_document *doc, int page_number, fz_rect *out) {
+  int ok = 0;
+  fz_page *page = NULL;
+  fz_stext_page *st = NULL;
+  fz_try(ctx) {
+    page = fz_load_page(ctx, doc, page_number);
+    fz_rect pb = fz_bound_page(ctx, page);
+    fz_stext_options opts = {0};
+    st = fz_new_stext_page_from_page(ctx, page, &opts);
+    fz_rect acc = fz_empty_rect;
+    int found = 0;
+    for (fz_stext_block *b = st->first_block; b; b = b->next) {
+      if (b->type != FZ_STEXT_BLOCK_TEXT) continue;
+      // skip blocks entirely outside the visible page (clipped/bleed text)
+      if (b->bbox.x1 < pb.x0 || b->bbox.x0 > pb.x1 || b->bbox.y1 < pb.y0 || b->bbox.y0 > pb.y1) continue;
+      fz_rect r = fz_intersect_rect(b->bbox, pb);
+      acc = found ? fz_union_rect(acc, r) : r;
+      found = 1;
+    }
+    if (found) {
+      *out = acc;
+      ok = 1;
+    }
+  }
+  fz_always(ctx) {
+    if (st) fz_drop_stext_page(ctx, st);
+    if (page) fz_drop_page(ctx, page);
+  }
+  fz_catch(ctx) { ok = 0; }
+  return ok;
+}
+
 int fz_search_page_z(fz_context *ctx, fz_document *doc, int page_number, const char *needle, fz_quad *quads, int max_quads) {
   int count = 0;
   fz_try(ctx) { count = fz_search_page_number(ctx, doc, page_number, needle, NULL, quads, max_quads); }

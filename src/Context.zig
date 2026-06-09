@@ -124,6 +124,9 @@ pub const Context = struct {
                     if (pos.spread != document_handler.getSpread()) {
                         document_handler.toggleSpread();
                     }
+                    if (pos.crop_left != 0 or pos.crop_right != 0 or pos.crop_top != 0 or pos.crop_bottom != 0) {
+                        document_handler.setMarginCrop(pos.crop_left, pos.crop_right, pos.crop_top, pos.crop_bottom);
+                    }
                     document_handler.setScrollX(pos.scroll_x);
                     document_handler.setScrollY(pos.scroll_y);
                     if (pos.zoom > 0) document_handler.setActiveZoom(pos.zoom);
@@ -204,6 +207,10 @@ pub const Context = struct {
             .crop = self.document_handler.getCropToContent(),
             .hlock = self.lock_horizontal_scroll,
             .spread = self.document_handler.getSpread(),
+            .crop_left = self.document_handler.crop_left,
+            .crop_right = self.document_handler.crop_right,
+            .crop_top = self.document_handler.crop_top,
+            .crop_bottom = self.document_handler.crop_bottom,
             .path = self.doc_abs_path,
             .last_opened = time.nowRealSeconds(),
         }, self.marks.items);
@@ -420,15 +427,14 @@ pub const Context = struct {
         window_width: u32,
         window_height: u32,
     ) !Cache.CachedImage {
-        const spread = self.document_handler.getSpread();
         const cache_key = Cache.Key{
             .colorize = self.config.general.colorize,
-            .page = self.document_handler.renderUnitStart(page_number),
+            .page = page_number,
             .width_mode = self.document_handler.getWidthMode(),
             .zoom = @as(u32, @intFromFloat(self.document_handler.getActiveZoom() * 1000.0)),
             .crop = self.document_handler.getCropToContent(),
-            .spread = spread,
-            .shift_x = if (!spread and page_number % 2 == 1) self.document_handler.getOddShiftX() else 0,
+            .spread = self.document_handler.getSpread(),
+            .shift_x = if (page_number % 2 == 1) self.document_handler.getOddShiftX() else 0,
         };
 
         if (self.config.cache.enabled) {
@@ -468,14 +474,21 @@ pub const Context = struct {
 
         var viewport_rows: u16 = win.height;
         if (self.config.status_bar.enabled or self.current_mode == .command or self.current_mode == .search) viewport_rows -|= 1;
-        const viewport_w_pix: u32 = @as(u32, win.width) * @as(u32, pix_per_col);
         const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
+
+        // In spread mode the strip flows through two columns; pages render at
+        // column width (minus a 1-cell margin per side) and may straddle the
+        // column break.
+        const columns: u16 = if (self.document_handler.getSpread()) 2 else 1;
+        const col_cells: u16 = win.width / columns;
+        const render_cells: u16 = if (columns > 1) col_cells -| 2 else win.width;
+        const render_w_pix: u32 = @as(u32, render_cells) * @as(u32, pix_per_col);
 
         if (self.current_mode == .marks or self.current_mode == .toc or self.current_mode == .help) return;
 
-        var page_num = self.document_handler.renderUnitStart(self.document_handler.getCurrentPageNumber());
+        var page_num = self.document_handler.getCurrentPageNumber();
         const total_pages = self.document_handler.getTotalPages();
-        var cur = try self.getPage(page_num, viewport_w_pix, viewport_h_pix);
+        var cur = try self.getPage(page_num, render_w_pix, viewport_h_pix);
 
         if (self.document_handler.takePendingScrollPdfY()) |pdf_y| {
             if (!std.math.isNan(pdf_y)) {
@@ -490,30 +503,28 @@ pub const Context = struct {
 
         var scroll_y: i32 = self.document_handler.getScrollY();
 
-        while (scroll_y < 0) {
-            const prev_unit = self.document_handler.prevRenderUnit(page_num) orelse break;
-            const prev = try self.getPage(prev_unit, viewport_w_pix, viewport_h_pix);
+        while (scroll_y < 0 and page_num > 0) {
+            const prev = try self.getPage(page_num - 1, render_w_pix, viewport_h_pix);
             scroll_y += @as(i32, @intCast(prev.image.height));
-            page_num = prev_unit;
+            page_num -= 1;
             cur = prev;
         }
 
-        while (scroll_y >= @as(i32, @intCast(cur.image.height))) {
-            const next_unit = self.document_handler.nextRenderUnit(page_num) orelse break;
+        while (page_num + 1 < total_pages and scroll_y >= @as(i32, @intCast(cur.image.height))) {
             scroll_y -= @as(i32, @intCast(cur.image.height));
-            page_num = next_unit;
-            cur = try self.getPage(next_unit, viewport_w_pix, viewport_h_pix);
+            page_num += 1;
+            cur = try self.getPage(page_num, render_w_pix, viewport_h_pix);
         }
 
-        if (scroll_y < 0 and self.document_handler.prevRenderUnit(page_num) == null) scroll_y = 0;
-        if (self.document_handler.nextRenderUnit(page_num) == null) {
+        if (page_num == 0 and scroll_y < 0) scroll_y = 0;
+        if (page_num + 1 == total_pages) {
             const max_y = @max(0, @as(i32, @intCast(cur.image.height)) - @as(i32, @intCast(viewport_h_pix)));
             if (scroll_y > max_y) scroll_y = max_y;
         }
 
         self.document_handler.setCurrentPage(page_num);
         self.document_handler.setScrollY(scroll_y);
-        self.document_handler.clampScrollX(viewport_w_pix);
+        self.document_handler.clampScrollX(render_w_pix);
         self.current_page = cur.image;
         self.reload_page = false;
 
@@ -522,74 +533,89 @@ pub const Context = struct {
         const ppc_i: i32 = @intCast(pix_per_col);
         const display_scroll_y: i32 = @divFloor(scroll_y, ppr_i) * ppr_i;
         const display_scroll_x: i32 = @divFloor(scroll_x, ppc_i) * ppc_i;
-        var y_pix_used: u32 = 0;
         var draw_page = page_num;
         var first_top: i32 = display_scroll_y;
 
-        while (y_pix_used < viewport_h_pix and draw_page < total_pages) {
-            const entry = try self.getPage(draw_page, viewport_w_pix, viewport_h_pix);
-            const img = entry.image;
-            const clip_top: u32 = @intCast(@max(0, first_top));
-            const img_h: u32 = img.height;
-            if (clip_top >= img_h) {
-                draw_page = self.document_handler.nextRenderUnit(draw_page) orelse break;
-                first_top = 0;
-                continue;
+        // The strip flows column by column; (draw_page, first_top) carry across
+        // the column break so a page can end mid-column-left, mid-page.
+        var col: u16 = 0;
+        outer: while (col < columns) : (col += 1) {
+            const col_base: u16 = col * col_cells;
+            var y_pix_used: u32 = 0;
+
+            while (y_pix_used < viewport_h_pix and draw_page < total_pages) {
+                const entry = try self.getPage(draw_page, render_w_pix, viewport_h_pix);
+                const img = entry.image;
+                const clip_top: u32 = @intCast(@max(0, first_top));
+                const img_h: u32 = img.height;
+                if (clip_top >= img_h) {
+                    if (draw_page + 1 >= total_pages) break :outer;
+                    draw_page += 1;
+                    first_top = 0;
+                    continue;
+                }
+                const remaining_vp = viewport_h_pix - y_pix_used;
+                const visible_h: u32 = @min(remaining_vp, img_h - clip_top);
+                if (visible_h == 0) {
+                    if (draw_page + 1 >= total_pages) break :outer;
+                    draw_page += 1;
+                    first_top = 0;
+                    continue;
+                }
+
+                const img_w: u32 = img.width;
+                const need_clip_x = img_w > render_w_pix;
+                const clip_w: u32 = if (need_clip_x) render_w_pix else img_w;
+                const clip_x: u32 = if (need_clip_x) @intCast(@max(0, display_scroll_x)) else 0;
+
+                const dest_cols: u16 = @intCast(@max(1, std.math.divCeil(u32, clip_w, pix_per_col) catch 1));
+                const dest_rows: u16 = @intCast(@max(1, std.math.divCeil(u32, visible_h, pix_per_row) catch 1));
+                const x_off: u16 = if (col_cells > dest_cols) (col_cells - dest_cols) / 2 else 0;
+                const y_off: u16 = @intCast(y_pix_used / pix_per_row);
+
+                const child = win.child(.{
+                    .x_off = col_base + x_off,
+                    .y_off = y_off,
+                    .width = dest_cols,
+                    .height = dest_rows,
+                });
+                try img.draw(child, .{
+                    .clip_region = .{
+                        .x = @intCast(clip_x),
+                        .y = @intCast(clip_top),
+                        .width = @intCast(clip_w),
+                        .height = @intCast(visible_h),
+                    },
+                    .size = .{ .cols = dest_cols, .rows = dest_rows },
+                    .z_index = if (self.current_mode == .hint or self.current_mode == .marks) -1 else null,
+                });
+
+                if (self.visible_pages_len < self.visible_pages.len) {
+                    const vp_x_left: u32 = @as(u32, col_base + x_off) * @as(u32, pix_per_col);
+                    self.visible_pages[self.visible_pages_len] = .{
+                        .page_num = draw_page,
+                        .vp_y_top = y_pix_used,
+                        .vp_y_bot = y_pix_used + visible_h,
+                        .vp_x_left = vp_x_left,
+                        .vp_x_right = vp_x_left + clip_w,
+                        .clip_x = clip_x,
+                        .clip_y = clip_top,
+                        .origin_x = entry.origin_x,
+                        .origin_y = entry.origin_y,
+                    };
+                    self.visible_pages_len += 1;
+                }
+
+                y_pix_used += @as(u32, dest_rows) * @as(u32, pix_per_row);
+                if (clip_top + visible_h < img_h) {
+                    // page continues — into this column's remainder or the next column
+                    first_top = @intCast(clip_top + visible_h);
+                } else {
+                    if (draw_page + 1 >= total_pages) break :outer;
+                    draw_page += 1;
+                    first_top = 0;
+                }
             }
-            const remaining_vp = viewport_h_pix - y_pix_used;
-            const visible_h: u32 = @min(remaining_vp, img_h - clip_top);
-            if (visible_h == 0) {
-                draw_page = self.document_handler.nextRenderUnit(draw_page) orelse break;
-                first_top = 0;
-                continue;
-            }
-
-            const img_w: u32 = img.width;
-            const need_clip_x = img_w > viewport_w_pix;
-            const clip_w: u32 = if (need_clip_x) viewport_w_pix else img_w;
-            const clip_x: u32 = if (need_clip_x) @intCast(@max(0, display_scroll_x)) else 0;
-
-            const dest_cols: u16 = @intCast(@max(1, std.math.divCeil(u32, clip_w, pix_per_col) catch 1));
-            const dest_rows: u16 = @intCast(@max(1, std.math.divCeil(u32, visible_h, pix_per_row) catch 1));
-            const x_off: u16 = if (win.width > dest_cols) (win.width - dest_cols) / 2 else 0;
-            const y_off: u16 = @intCast(y_pix_used / pix_per_row);
-
-            const child = win.child(.{
-                .x_off = x_off,
-                .y_off = y_off,
-                .width = dest_cols,
-                .height = dest_rows,
-            });
-            try img.draw(child, .{
-                .clip_region = .{
-                    .x = @intCast(clip_x),
-                    .y = @intCast(clip_top),
-                    .width = @intCast(clip_w),
-                    .height = @intCast(visible_h),
-                },
-                .size = .{ .cols = dest_cols, .rows = dest_rows },
-                .z_index = if (self.current_mode == .hint or self.current_mode == .marks) -1 else null,
-            });
-
-            if (self.visible_pages_len < self.visible_pages.len) {
-                const vp_x_left: u32 = @as(u32, x_off) * @as(u32, pix_per_col);
-                self.visible_pages[self.visible_pages_len] = .{
-                    .page_num = draw_page,
-                    .vp_y_top = y_pix_used,
-                    .vp_y_bot = y_pix_used + visible_h,
-                    .vp_x_left = vp_x_left,
-                    .vp_x_right = vp_x_left + clip_w,
-                    .clip_x = clip_x,
-                    .clip_y = clip_top,
-                    .origin_x = entry.origin_x,
-                    .origin_y = entry.origin_y,
-                };
-                self.visible_pages_len += 1;
-            }
-
-            y_pix_used += @as(u32, dest_rows) * @as(u32, pix_per_row);
-            first_top = 0;
-            draw_page = self.document_handler.nextRenderUnit(draw_page) orelse break;
         }
     }
 
@@ -606,8 +632,10 @@ pub const Context = struct {
 
             const bitmap_x: f32 = @floatFromInt(p.clip_x + (click_pix_x - p.vp_x_left));
             const bitmap_y: f32 = @floatFromInt(p.clip_y + (click_pix_y - p.vp_y_top));
-            const pdf_x = bitmap_x / zoom + p.origin_x;
+            var pdf_x = bitmap_x / zoom + p.origin_x;
             const pdf_y = bitmap_y / zoom + p.origin_y;
+            // The bitmap is in aligned space; link rects are in raw page coords.
+            if (p.page_num % 2 == 1) pdf_x -= @as(f32, @floatFromInt(self.document_handler.getOddShiftX()));
 
             const target = self.document_handler.findLinkAtPoint(self.allocator, p.page_num, pdf_x, pdf_y) orelse return;
             defer if (target == .uri) self.allocator.free(target.uri);
@@ -1123,6 +1151,19 @@ pub const Context = struct {
             text = "";
         } else if (std.mem.eql(u8, text, Config.StatusBar.HLOCK)) {
             text = if (self.lock_horizontal_scroll) " HLOCK " else "";
+        } else if (std.mem.eql(u8, text, Config.StatusBar.ODDX)) {
+            const oddx = self.document_handler.getOddShiftX();
+            text = if (oddx != 0)
+                try std.fmt.allocPrint(allocator, " ODDX {d} ", .{oddx})
+            else
+                "";
+        } else if (std.mem.eql(u8, text, Config.StatusBar.CROP)) {
+            text = if (self.document_handler.cropInfo()) |ci|
+                try std.fmt.allocPrint(allocator, " CROP{s} {d:.0} {d:.0} {d:.0} {d:.0} ", .{
+                    if (ci.auto) "*" else "", ci.left, ci.right, ci.top, ci.bottom,
+                })
+            else
+                "";
         } else if (std.mem.eql(u8, text, Config.StatusBar.CHAPTER)) {
             text = self.chapterFor(self.document_handler.getCurrentPageNumber());
         } else if (std.mem.eql(u8, text, Config.StatusBar.PERCENT)) {
