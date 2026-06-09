@@ -5,256 +5,147 @@ const Config = @import("../config/Config.zig");
 
 context: *Context,
 
-pub const KeyAction = struct {
-    codepoint: u21,
-    mods: vaxis.Key.Modifiers,
-    handler: *const fn (*Context) void,
-};
-
 pub fn init(context: *Context) Self {
     return .{
         .context = context,
     };
 }
 
+// Keymap field name → action, dispatched in order (first match wins).
+const bindings = .{
+    .{ "next", nextPage },
+    .{ "prev", prevPage },
+    .{ "zoom_in", zoomIn },
+    .{ "zoom_out", zoomOut },
+    .{ "width_mode", toggleWidthMode },
+    .{ "crop_to_content", toggleCrop },
+    .{ "full_screen", toggleStatusBar },
+    .{ "scroll_up", scrollUp },
+    .{ "scroll_down", scrollDown },
+    .{ "scroll_left", scrollLeft },
+    .{ "scroll_right", scrollRight },
+    .{ "colorize", toggleInvert },
+    .{ "enter_command_mode", enterCommand },
+    .{ "hint_mode", enterHints },
+    .{ "set_mark", startSetMark },
+    .{ "jump_mark", startJumpMark },
+    .{ "toc_mode", enterToc },
+    .{ "marks_mode", enterMarks },
+    .{ "jump_back", Context.jumpBack },
+    .{ "jump_forward", Context.jumpForward },
+    .{ "open_in_editor", openPageInEditor },
+    .{ "open_chapter_in_editor", openChapterInEditor },
+    .{ "show_help", showHelp },
+};
+
 pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
-    if (self.context.pending_op) |op| {
-        self.context.pending_op = null;
+    const ctx = self.context;
+
+    if (ctx.pending_op) |op| {
+        ctx.pending_op = null;
         if (key.codepoint >= 'a' and key.codepoint <= 'z') {
             const letter: u8 = @intCast(key.codepoint);
             switch (op) {
-                .set_mark => self.context.setMark(letter),
-                .jump_mark => self.context.jumpToMark(letter),
+                .set_mark => ctx.setMark(letter),
+                .jump_mark => ctx.jumpToMark(letter),
             }
         }
         return;
     }
 
-    const key_actions = &[_]KeyAction{
-        .{
-            .codepoint = km.next.codepoint,
-            .mods = km.next.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    if (s.document_handler.changePage(1)) {
-                        s.resetCurrentPage();
-                    }
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.prev.codepoint,
-            .mods = km.prev.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    if (s.document_handler.changePage(-1)) {
-                        s.resetCurrentPage();
-                    }
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.zoom_in.codepoint,
-            .mods = km.zoom_in.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.document_handler.zoomIn();
-                    s.reload_page = true;
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.zoom_out.codepoint,
-            .mods = km.zoom_out.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.document_handler.zoomOut();
-                    s.reload_page = true;
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.width_mode.codepoint,
-            .mods = km.width_mode.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.document_handler.toggleWidthMode();
-                    s.reload_page = true;
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.crop_to_content.codepoint,
-            .mods = km.crop_to_content.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.document_handler.toggleCropToContent();
-                    s.reload_page = true;
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.full_screen.codepoint,
-            .mods = km.full_screen.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.toggleFullScreen();
-                    s.document_handler.resetDefaultZoom();
-                    s.reload_page = true;
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.scroll_up.codepoint,
-            .mods = km.scroll_up.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.document_handler.scrollY(s.config.general.scroll_step);
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.scroll_down.codepoint,
-            .mods = km.scroll_down.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.document_handler.scrollY(-s.config.general.scroll_step);
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.scroll_left.codepoint,
-            .mods = km.scroll_left.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.document_handler.scroll(.Left);
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.scroll_right.codepoint,
-            .mods = km.scroll_right.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.document_handler.scroll(.Right);
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.colorize.codepoint,
-            .mods = km.colorize.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.document_handler.toggleColor();
-                    s.reload_page = true;
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.enter_command_mode.codepoint,
-            .mods = km.enter_command_mode.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.changeMode(.command);
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.hint_mode.codepoint,
-            .mods = km.hint_mode.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.changeMode(.hint);
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.set_mark.codepoint,
-            .mods = km.set_mark.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.pending_op = .set_mark;
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.jump_mark.codepoint,
-            .mods = km.jump_mark.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.pending_op = .jump_mark;
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.toc_mode.codepoint,
-            .mods = km.toc_mode.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.changeMode(.toc);
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.marks_mode.codepoint,
-            .mods = km.marks_mode.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.changeMode(.marks);
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.jump_back.codepoint,
-            .mods = km.jump_back.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.jumpBack();
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.jump_forward.codepoint,
-            .mods = km.jump_forward.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.jumpForward();
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.open_in_editor.codepoint,
-            .mods = km.open_in_editor.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.openCurrentPageInEditor() catch {};
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.open_chapter_in_editor.codepoint,
-            .mods = km.open_chapter_in_editor.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.openCurrentChapterInEditor() catch {};
-                }
-            }.action,
-        },
-        .{
-            .codepoint = km.show_help.codepoint,
-            .mods = km.show_help.mods,
-            .handler = struct {
-                fn action(s: *Context) void {
-                    s.changeMode(.help);
-                }
-            }.action,
-        },
-    };
-
-    for (key_actions) |action| {
-        if (key.matches(action.codepoint, action.mods)) {
-            action.handler(self.context);
-            return;
-        }
+    inline for (bindings) |b| {
+        const bind = @field(km, b[0]);
+        if (key.matches(bind.codepoint, bind.mods)) return b[1](ctx);
     }
+}
+
+fn nextPage(ctx: *Context) void {
+    if (ctx.document_handler.changePage(1)) ctx.resetCurrentPage();
+}
+
+fn prevPage(ctx: *Context) void {
+    if (ctx.document_handler.changePage(-1)) ctx.resetCurrentPage();
+}
+
+fn zoomIn(ctx: *Context) void {
+    ctx.document_handler.zoomIn();
+    ctx.reload_page = true;
+}
+
+fn zoomOut(ctx: *Context) void {
+    ctx.document_handler.zoomOut();
+    ctx.reload_page = true;
+}
+
+fn toggleWidthMode(ctx: *Context) void {
+    ctx.document_handler.toggleWidthMode();
+    ctx.reload_page = true;
+}
+
+fn toggleCrop(ctx: *Context) void {
+    ctx.document_handler.toggleCropToContent();
+    ctx.reload_page = true;
+}
+
+fn toggleStatusBar(ctx: *Context) void {
+    ctx.toggleFullScreen();
+    ctx.document_handler.resetDefaultZoom();
+    ctx.reload_page = true;
+}
+
+fn toggleInvert(ctx: *Context) void {
+    ctx.document_handler.toggleColor();
+    ctx.reload_page = true;
+}
+
+fn scrollUp(ctx: *Context) void {
+    ctx.document_handler.scrollY(ctx.config.general.scroll_step);
+}
+
+fn scrollDown(ctx: *Context) void {
+    ctx.document_handler.scrollY(-ctx.config.general.scroll_step);
+}
+
+fn scrollLeft(ctx: *Context) void {
+    ctx.document_handler.offsetScroll(-ctx.config.general.scroll_step, 0);
+}
+
+fn scrollRight(ctx: *Context) void {
+    ctx.document_handler.offsetScroll(ctx.config.general.scroll_step, 0);
+}
+
+fn enterCommand(ctx: *Context) void {
+    ctx.changeMode(.command);
+}
+
+fn enterHints(ctx: *Context) void {
+    ctx.changeMode(.hint);
+}
+
+fn enterToc(ctx: *Context) void {
+    ctx.changeMode(.toc);
+}
+
+fn enterMarks(ctx: *Context) void {
+    ctx.changeMode(.marks);
+}
+
+fn showHelp(ctx: *Context) void {
+    ctx.changeMode(.help);
+}
+
+fn startSetMark(ctx: *Context) void {
+    ctx.pending_op = .set_mark;
+}
+
+fn startJumpMark(ctx: *Context) void {
+    ctx.pending_op = .jump_mark;
+}
+
+fn openPageInEditor(ctx: *Context) void {
+    ctx.openCurrentPageInEditor() catch {};
+}
+
+fn openChapterInEditor(ctx: *Context) void {
+    ctx.openCurrentChapterInEditor() catch {};
 }

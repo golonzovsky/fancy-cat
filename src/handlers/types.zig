@@ -7,8 +7,6 @@ pub const EncodedImage = struct {
     origin_y: f32 = 0,
 };
 
-pub const ScrollDirection = enum { Up, Down, Left, Right };
-
 pub const DocumentError = error{
     FailedToCreateContext,
     FailedToOpenDocument,

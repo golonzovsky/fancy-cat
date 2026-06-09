@@ -6,33 +6,20 @@ const types = @import("./types.zig");
 const Utilities = @import("../utilities/Utilities.zig");
 const Markdown = @import("./Markdown.zig");
 
+const time = @import("../utilities/time.zig");
+
 const c = @cImport({
     @cInclude("fitz-z.h");
     @cInclude("mupdf/fitz.h");
     @cInclude("mupdf/pdf.h");
 });
 
-const time_compat = struct {
-    pub const timespec = extern struct { tv_sec: c_long, tv_nsec: c_long };
-    pub extern "c" fn clock_gettime(clk: c_int, ts: *timespec) c_int;
-    pub extern "c" fn nanosleep(req: *const timespec, rem: ?*timespec) c_int;
-    const CLOCK_MONOTONIC: c_int = 6;
-    pub fn milliTimestamp() i64 {
-        var ts: timespec = undefined;
-        _ = clock_gettime(CLOCK_MONOTONIC, &ts);
-        return @as(i64, ts.tv_sec) * std.time.ms_per_s + @divTrunc(@as(i64, ts.tv_nsec), std.time.ns_per_ms);
-    }
-    pub fn sleep(ns: u64) void {
-        var req = timespec{ .tv_sec = @intCast(ns / std.time.ns_per_s), .tv_nsec = @intCast(ns % std.time.ns_per_s) };
-        _ = nanosleep(&req, null);
-    }
-};
-
 allocator: std.mem.Allocator,
 io: std.Io,
 ctx: [*c]c.fz_context,
 doc: [*c]c.fz_document,
 total_pages: u16,
+current_page_number: u16,
 path: []const u8,
 active_zoom: f32,
 default_zoom: f32,
@@ -51,8 +38,13 @@ pub fn init(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
+    initial_page: ?u16,
     config: *Config,
 ) !Self {
+    if (!std.mem.endsWith(u8, path, ".pdf")) {
+        return types.DocumentError.UnsupportedFileFormat;
+    }
+
     const ctx = c.fz_new_context(null, null, c.FZ_STORE_UNLIMITED) orelse {
         std.debug.print("Failed to create mupdf context\n", .{});
         return types.DocumentError.FailedToCreateContext;
@@ -72,12 +64,20 @@ pub fn init(
 
     const total_pages = @as(u16, @intCast(c.fz_count_pages(ctx, doc)));
 
+    const current_page_number = if (initial_page) |page| blk: {
+        if (page < 1 or page > total_pages) {
+            return types.DocumentError.InvalidPageNumber;
+        }
+        break :blk page - 1;
+    } else 0;
+
     return .{
         .allocator = allocator,
         .io = io,
         .ctx = ctx,
         .doc = doc,
         .total_pages = total_pages,
+        .current_page_number = current_page_number,
         .path = path,
         .active_zoom = 0,
         .default_zoom = 0,
@@ -102,10 +102,10 @@ pub fn deinit(self: *Self) void {
 pub fn reloadDocument(self: *Self) !void {
     const retry_delay = @as(u64, @intFromFloat(self.config.general.retry_delay * @as(f64, std.time.ns_per_s)));
     const timeout = @as(i64, @intFromFloat(self.config.general.timeout * @as(f64, std.time.ms_per_s)));
-    const start_time = time_compat.milliTimestamp();
+    const start_time = time.milliTimestamp();
 
     while (true) {
-        const now = time_compat.milliTimestamp();
+        const now = time.milliTimestamp();
         if (now - start_time > timeout) {
             std.debug.print("Failed to reload document\n", .{});
             return types.DocumentError.FailedToOpenDocument;
@@ -117,19 +117,40 @@ pub fn reloadDocument(self: *Self) !void {
         }
 
         const doc = c.fz_open_document_z(self.ctx, self.path.ptr) orelse {
-            time_compat.sleep(retry_delay);
+            time.sleep(retry_delay);
             continue; // try again
         };
         self.doc = doc;
 
         const page_count = c.fz_count_pages_z(self.ctx, self.doc);
         if (page_count == 0) {
-            time_compat.sleep(retry_delay);
+            time.sleep(retry_delay);
             continue; // try again
         }
         self.total_pages = @as(u16, @intCast(page_count));
+        if (self.current_page_number >= self.total_pages) {
+            self.current_page_number = self.total_pages - 1;
+        }
         return;
     }
+}
+
+pub fn goToPage(self: *Self, page_num: u16) bool {
+    if (page_num >= 1 and page_num <= self.total_pages and page_num != self.current_page_number + 1) {
+        self.current_page_number = page_num - 1;
+        return true;
+    }
+    return false;
+}
+
+pub fn changePage(self: *Self, delta: i32) bool {
+    const new_page = @as(i32, @intCast(self.current_page_number)) + delta;
+
+    if (new_page >= 0 and new_page < self.total_pages) {
+        self.current_page_number = @as(u16, @intCast(new_page));
+        return true;
+    }
+    return false;
 }
 
 fn calculateZoomLevel(self: *Self, window_width: u32, window_height: u32, bound: c.fz_rect) void {
@@ -163,17 +184,17 @@ pub fn renderPage(
 ) !types.EncodedImage {
     const retry_delay = @as(u64, @intFromFloat(self.config.general.retry_delay * @as(f64, std.time.ns_per_s)));
     const timeout = @as(i64, @intFromFloat(self.config.general.timeout * @as(f64, std.time.ms_per_s)));
-    const start_time = time_compat.milliTimestamp();
+    const start_time = time.milliTimestamp();
 
     while (true) {
-        const now = time_compat.milliTimestamp();
+        const now = time.milliTimestamp();
         if (now - start_time > timeout) {
             std.debug.print("Failed to render page\n", .{});
             return types.DocumentError.FailedToRenderPage;
         }
 
         const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number))) orelse {
-            time_compat.sleep(retry_delay);
+            time.sleep(retry_delay);
             continue;
         };
         defer c.fz_drop_page(self.ctx, page);
@@ -294,17 +315,6 @@ pub fn setZoom(self: *Self, percent: f32) void {
 
 pub fn toggleColor(self: *Self) void {
     self.config.general.colorize = !self.config.general.colorize;
-}
-
-pub fn scroll(self: *Self, direction: types.ScrollDirection) void {
-    const step: i32 = @intFromFloat(self.config.general.scroll_step);
-    switch (direction) {
-        .Up => self.pix_scroll_y -= step,
-        .Down => self.pix_scroll_y += step,
-        .Left => self.pix_scroll_x -= step,
-        .Right => self.pix_scroll_x += step,
-    }
-    self.clampScrollX(self.last_viewport_w);
 }
 
 pub fn offsetScroll(self: *Self, dx: f32, dy: f32) void {
@@ -443,12 +453,7 @@ pub fn getDocumentKey(self: *Self, allocator: std.mem.Allocator) ![]u8 {
         if (buf.len > 0) {
             var digest: [32]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(buf[0..@min(buf.len, 1024 * 1024)], &digest, .{});
-            var hex: [64]u8 = undefined;
-            const hex_chars = "0123456789abcdef";
-            for (digest, 0..) |b, i| {
-                hex[2 * i] = hex_chars[b >> 4];
-                hex[2 * i + 1] = hex_chars[b & 0xF];
-            }
+            const hex = std.fmt.bytesToHex(digest, .lower);
             return std.fmt.allocPrint(allocator, "sha256-1mb:{s}", .{hex});
         }
     } else |_| {}
@@ -491,6 +496,72 @@ pub fn findLinkAtPoint(
 
 pub fn getWidthMode(self: *Self) bool {
     return self.width_mode;
+}
+
+pub fn getCropToContent(self: *Self) bool {
+    return self.crop_to_content;
+}
+
+pub fn getCurrentPageNumber(self: *Self) u16 {
+    return self.current_page_number;
+}
+
+pub fn setCurrentPage(self: *Self, page: u16) void {
+    self.current_page_number = page;
+}
+
+pub fn getPath(self: *Self) []const u8 {
+    return self.path;
+}
+
+pub fn getTotalPages(self: *Self) u16 {
+    return self.total_pages;
+}
+
+pub fn getActiveZoom(self: *Self) f32 {
+    return self.active_zoom;
+}
+
+pub fn setActiveZoom(self: *Self, zoom: f32) void {
+    self.active_zoom = zoom;
+}
+
+pub fn getScrollX(self: *Self) i32 {
+    return self.pix_scroll_x;
+}
+
+pub fn getScrollY(self: *Self) i32 {
+    return self.pix_scroll_y;
+}
+
+pub fn setScrollX(self: *Self, x: i32) void {
+    self.pix_scroll_x = x;
+}
+
+pub fn setScrollY(self: *Self, y: i32) void {
+    self.pix_scroll_y = y;
+}
+
+pub fn scrollY(self: *Self, dy: f32) void {
+    self.pix_scroll_y -= @intFromFloat(dy);
+}
+
+pub fn setOddShiftX(self: *Self, x: i32) void {
+    self.odd_shift_x = x;
+}
+
+pub fn getOddShiftX(self: *Self) i32 {
+    return self.odd_shift_x;
+}
+
+pub fn setPendingScrollPdfY(self: *Self, y: f32) void {
+    self.pending_scroll_pdf_y = y;
+}
+
+pub fn takePendingScrollPdfY(self: *Self) ?f32 {
+    const y = self.pending_scroll_pdf_y;
+    self.pending_scroll_pdf_y = null;
+    return y;
 }
 
 fn extractEventBridge(ud: ?*anyopaque, kind: c_int, chars: [*c]const c.fz_char_z, n: c_int, str: [*c]const u8) callconv(.c) void {

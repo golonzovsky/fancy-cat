@@ -82,19 +82,15 @@ fn fmtKey(a: std.mem.Allocator, key: vaxis.Key) []const u8 {
         const len = std.unicode.utf8Encode(key.codepoint, &cp) catch 0;
         i = put(&buf, i, cp[0..len]);
     }
-    return a.dupe(u8, buf[0..i]) catch buf[0..i];
+    return a.dupe(u8, buf[0..i]) catch "";
 }
 
 fn buildKeyLines(self: *Self, a: std.mem.Allocator) []const Line {
     const km = self.context.config.key_map;
-    const lines = a.alloc(Line, 24) catch return &.{};
-    var n: usize = 0;
+    var lines: std.ArrayList(Line) = .empty;
     const add = struct {
-        fn f(buf: []Line, idx: *usize, line: Line) void {
-            if (idx.* < buf.len) {
-                buf[idx.*] = line;
-                idx.* += 1;
-            }
+        fn f(alloc: std.mem.Allocator, list: *std.ArrayList(Line), line: Line) void {
+            list.append(alloc, line) catch {};
         }
     }.f;
     const two = struct {
@@ -103,35 +99,35 @@ fn buildKeyLines(self: *Self, a: std.mem.Allocator) []const Line {
         }
     }.f;
 
-    add(lines, &n, .{ .header = true, .label = "Navigation" });
-    add(lines, &n, .{ .keys = two(a, fmtKey(a, km.prev), fmtKey(a, km.next)), .label = "prev / next page" });
-    add(lines, &n, .{ .keys = std.fmt.allocPrint(a, "{s} {s} {s} {s}", .{ fmtKey(a, km.scroll_left), fmtKey(a, km.scroll_down), fmtKey(a, km.scroll_up), fmtKey(a, km.scroll_right) }) catch "", .label = "scroll" });
-    add(lines, &n, .{ .keys = two(a, fmtKey(a, km.jump_back), fmtKey(a, km.jump_forward)), .label = "jump back / forward" });
+    add(a, &lines, .{ .header = true, .label = "Navigation" });
+    add(a, &lines, .{ .keys = two(a, fmtKey(a, km.prev), fmtKey(a, km.next)), .label = "prev / next page" });
+    add(a, &lines, .{ .keys = std.fmt.allocPrint(a, "{s} {s} {s} {s}", .{ fmtKey(a, km.scroll_left), fmtKey(a, km.scroll_down), fmtKey(a, km.scroll_up), fmtKey(a, km.scroll_right) }) catch "", .label = "scroll" });
+    add(a, &lines, .{ .keys = two(a, fmtKey(a, km.jump_back), fmtKey(a, km.jump_forward)), .label = "jump back / forward" });
 
-    add(lines, &n, .{ .header = true, .label = "View" });
-    add(lines, &n, .{ .keys = two(a, fmtKey(a, km.zoom_in), fmtKey(a, km.zoom_out)), .label = "zoom in / out" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.width_mode), .label = "fit width" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.crop_to_content), .label = "crop to content" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.full_screen), .label = "toggle status bar" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.colorize), .label = "toggle invert" });
+    add(a, &lines, .{ .header = true, .label = "View" });
+    add(a, &lines, .{ .keys = two(a, fmtKey(a, km.zoom_in), fmtKey(a, km.zoom_out)), .label = "zoom in / out" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.width_mode), .label = "fit width" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.crop_to_content), .label = "crop to content" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.full_screen), .label = "toggle status bar" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.colorize), .label = "toggle invert" });
 
-    add(lines, &n, .{ .header = true, .label = "Marks & contents" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.set_mark), .label = "set mark (a-z)" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.jump_mark), .label = "jump to mark (a-z)" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.marks_mode), .label = "marks list" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.toc_mode), .label = "table of contents" });
+    add(a, &lines, .{ .header = true, .label = "Marks & contents" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.set_mark), .label = "set mark (a-z)" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.jump_mark), .label = "jump to mark (a-z)" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.marks_mode), .label = "marks list" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.toc_mode), .label = "table of contents" });
 
-    add(lines, &n, .{ .header = true, .label = "Editor & links" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.open_in_editor), .label = "page in $EDITOR" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.open_chapter_in_editor), .label = "chapter in $EDITOR" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.hint_mode), .label = "follow link (hints)" });
+    add(a, &lines, .{ .header = true, .label = "Editor & links" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.open_in_editor), .label = "page in $EDITOR" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.open_chapter_in_editor), .label = "chapter in $EDITOR" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.hint_mode), .label = "follow link (hints)" });
 
-    add(lines, &n, .{ .header = true, .label = "General" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.enter_command_mode), .label = "command mode" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.show_help), .label = "this help" });
-    add(lines, &n, .{ .keys = fmtKey(a, km.quit), .label = "quit" });
+    add(a, &lines, .{ .header = true, .label = "General" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.enter_command_mode), .label = "command mode" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.show_help), .label = "this help" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.quit), .label = "quit" });
 
-    return lines[0..n];
+    return lines.items;
 }
 
 fn drawColumn(popup: vaxis.Window, lines: []const Line, base_x: u16, key_w: u16, max_h: u16, bg: vaxis.Cell.Style, head: vaxis.Cell.Style, key_style: vaxis.Cell.Style) void {

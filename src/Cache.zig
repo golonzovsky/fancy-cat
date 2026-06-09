@@ -1,6 +1,5 @@
 const Self = @This();
 const std = @import("std");
-const Config = @import("config/Config.zig");
 const vaxis = @import("vaxis");
 
 pub const Key = struct {
@@ -28,26 +27,15 @@ allocator: std.mem.Allocator,
 map: std.AutoHashMap(Key, *Node),
 head: ?*Node,
 tail: ?*Node,
-config: *Config,
 lru_size: u16,
-vx: vaxis.Vaxis,
-tty: *const vaxis.Tty,
 
-pub fn init(
-    allocator: std.mem.Allocator,
-    config: *Config,
-    vx: vaxis.Vaxis,
-    tty: *const vaxis.Tty,
-) Self {
+pub fn init(allocator: std.mem.Allocator, lru_size: u16) Self {
     return .{
         .allocator = allocator,
         .map = std.AutoHashMap(Key, *Node).init(allocator),
         .head = null,
         .tail = null,
-        .config = config,
-        .lru_size = config.cache.lru_size,
-        .vx = vx,
-        .tty = tty,
+        .lru_size = lru_size,
     };
 }
 
@@ -55,10 +43,7 @@ pub fn deinit(self: *Self) void {
     var current = self.head;
     while (current) |node| {
         const next = node.next;
-
-        // self.vx.freeImage(self.tty.anyWriter(), node.value.image.id);
         self.allocator.destroy(node);
-
         current = next;
     }
 
@@ -114,7 +99,6 @@ fn remove(self: *Self, key: Key) bool {
     const node = self.map.get(key) orelse return false;
     _ = self.map.remove(key);
 
-    // self.vx.freeImage(self.tty.anyWriter(), node.value.image.id);
     self.removeNode(node);
     self.allocator.destroy(node);
 

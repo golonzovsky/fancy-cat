@@ -8,7 +8,7 @@ const TocMode = @import("modes/TocMode.zig");
 const HelpMode = @import("modes/HelpMode.zig");
 const fzwatch = @import("fzwatch");
 const Config = @import("config/Config.zig");
-const DocumentHandler = @import("handlers/DocumentHandler.zig");
+const PdfHandler = @import("handlers/PdfHandler.zig");
 const Cache = @import("./Cache.zig");
 const ReloadIndicatorTimer = @import("services/ReloadIndicatorTimer.zig");
 const History = @import("services/History.zig");
@@ -58,7 +58,7 @@ pub const Context = struct {
     should_quit: bool,
     tty: vaxis.Tty,
     vx: vaxis.Vaxis,
-    document_handler: DocumentHandler,
+    document_handler: PdfHandler,
     page_info_text: []u8,
     current_page: ?vaxis.Image,
     watcher: ?fzwatch.Watcher,
@@ -99,7 +99,7 @@ pub const Context = struct {
         config.* = Config.init(allocator, io, env);
         errdefer config.deinit();
 
-        var document_handler = try DocumentHandler.init(allocator, io, path, initial_page, config);
+        var document_handler = try PdfHandler.init(allocator, io, path, initial_page, config);
         errdefer document_handler.deinit();
 
         const doc_key = try document_handler.getDocumentKey(allocator);
@@ -160,7 +160,7 @@ pub const Context = struct {
             .positions = positions,
             .doc_key = doc_key,
             .reload_page = true,
-            .cache = Cache.init(allocator, config, vx, &tty),
+            .cache = Cache.init(allocator, config.cache.lru_size),
             .reload_indicator_timer = reload_indicator_timer,
             .current_reload_indicator_state = .idle,
             .reload_indicator_active = false,
@@ -202,14 +202,7 @@ pub const Context = struct {
         self.allocator.free(self.doc_key);
         self.jump_back.deinit(self.allocator);
         self.jump_forward.deinit(self.allocator);
-        switch (self.current_mode) {
-            .command => |*state| state.deinit(),
-            .hint => |*state| state.deinit(),
-            .marks => |*state| state.deinit(),
-            .toc => |*state| state.deinit(),
-            .help => |*state| state.deinit(),
-            .view => {},
-        }
+        self.deinitCurrentMode();
         if (self.watcher) |*w| {
             w.stop();
             if (self.watcher_thread) |thread| thread.join();
@@ -295,23 +288,19 @@ pub const Context = struct {
         }
     }
 
-    pub fn changeMode(self: *Self, new_state: ModeType) void {
+    fn deinitCurrentMode(self: *Self) void {
         switch (self.current_mode) {
-            .command => |*state| state.deinit(),
-            .hint => |*state| state.deinit(),
-            .marks => |*state| state.deinit(),
-            .toc => |*state| state.deinit(),
-            .help => |*state| state.deinit(),
             .view => {},
+            inline else => |*state| state.deinit(),
         }
+    }
 
+    pub fn changeMode(self: *Self, new_state: ModeType) void {
+        self.deinitCurrentMode();
         switch (new_state) {
-            .view => self.current_mode = .{ .view = ViewMode.init(self) },
-            .command => self.current_mode = .{ .command = CommandMode.init(self) },
-            .hint => self.current_mode = .{ .hint = HintMode.init(self) },
-            .marks => self.current_mode = .{ .marks = MarksMode.init(self) },
-            .toc => self.current_mode = .{ .toc = TocMode.init(self) },
-            .help => self.current_mode = .{ .help = HelpMode.init(self) },
+            inline else => |tag| {
+                self.current_mode = @unionInit(Mode, @tagName(tag), @FieldType(Mode, @tagName(tag)).init(self));
+            },
         }
     }
 
@@ -329,12 +318,7 @@ pub const Context = struct {
         }
 
         try switch (self.current_mode) {
-            .view => |*state| state.handleKeyStroke(key, km),
-            .command => |*state| state.handleKeyStroke(key, km),
-            .hint => |*state| state.handleKeyStroke(key, km),
-            .marks => |*state| state.handleKeyStroke(key, km),
-            .toc => |*state| state.handleKeyStroke(key, km),
-            .help => |*state| state.handleKeyStroke(key, km),
+            inline else => |*state| state.handleKeyStroke(key, km),
         };
     }
 
@@ -542,8 +526,6 @@ pub const Context = struct {
             const dest_rows: u16 = @intCast(@max(1, std.math.divCeil(u32, visible_h, pix_per_row) catch 1));
             const x_off: u16 = if (win.width > dest_cols) (win.width - dest_cols) / 2 else 0;
             const y_off: u16 = @intCast(y_pix_used / pix_per_row);
-            const clip_x_eff: u32 = clip_x;
-            const clip_w_eff: u32 = clip_w;
 
             const child = win.child(.{
                 .x_off = x_off,
@@ -553,9 +535,9 @@ pub const Context = struct {
             });
             try img.draw(child, .{
                 .clip_region = .{
-                    .x = @intCast(clip_x_eff),
+                    .x = @intCast(clip_x),
                     .y = @intCast(clip_top),
-                    .width = @intCast(clip_w_eff),
+                    .width = @intCast(clip_w),
                     .height = @intCast(visible_h),
                 },
                 .size = .{ .cols = dest_cols, .rows = dest_rows },
@@ -569,8 +551,8 @@ pub const Context = struct {
                     .vp_y_top = y_pix_used,
                     .vp_y_bot = y_pix_used + visible_h,
                     .vp_x_left = vp_x_left,
-                    .vp_x_right = vp_x_left + clip_w_eff,
-                    .clip_x = clip_x_eff,
+                    .vp_x_right = vp_x_left + clip_w,
+                    .clip_x = clip_x,
                     .clip_y = clip_top,
                     .origin_x = entry.origin_x,
                     .origin_y = entry.origin_y,
@@ -601,12 +583,14 @@ pub const Context = struct {
             const pdf_y = bitmap_y / zoom + p.origin_y;
 
             const target = self.document_handler.findLinkAtPoint(self.allocator, p.page_num, pdf_x, pdf_y) orelse return;
-            try self.followLink(target);
+            defer if (target == .uri) self.allocator.free(target.uri);
+            self.followLink(target);
             return;
         }
     }
 
-    fn followLink(self: *Self, target: @import("./handlers/PdfHandler.zig").LinkTarget) !void {
+    // Does not take ownership of a .uri target; the caller frees it.
+    pub fn followLink(self: *Self, target: PdfHandler.LinkTarget) void {
         switch (target) {
             .page => |dest| {
                 self.pushJump();
@@ -616,7 +600,6 @@ pub const Context = struct {
                 self.resetCurrentPage();
             },
             .uri => |uri| {
-                defer self.allocator.free(uri);
                 _ = std.process.spawn(self.io, .{
                     .argv = &.{ "open", uri },
                     .stdin = .ignore,
@@ -888,9 +871,7 @@ pub const Context = struct {
 
     pub fn enterCommandWithText(self: *Self, text: []const u8) void {
         self.changeMode(.command);
-        if (self.current_mode == .command) {
-            self.current_mode.command.text_input.insertSliceAtCursor(text) catch {};
-        }
+        self.current_mode.command.text_input.insertSliceAtCursor(text) catch {};
     }
 
     pub fn setMarkComment(self: *Self, letter: u8, comment: []const u8) !void {
@@ -921,28 +902,22 @@ pub const Context = struct {
         }
 
         // Expand all items into styled sub-items
-        var expanded_items = std.array_list.Managed(Config.StatusBar.StyledItem).init(arena);
-        defer expanded_items.deinit();
+        var expanded_items: std.ArrayList(Config.StatusBar.StyledItem) = .empty;
 
         for (self.config.status_bar.items) |item| {
-            switch (item) {
-                .styled => |styled| {
-                    try expandPlaceholders(&expanded_items, styled);
+            const styled = switch (item) {
+                .styled => |styled| styled,
+                .mode_aware => |mode_aware| switch (self.current_mode) {
+                    .command => mode_aware.command,
+                    else => mode_aware.view,
                 },
-                .mode_aware => |mode_aware| {
-                    switch (self.current_mode) {
-                        .view, .hint, .marks, .toc, .help => try expandPlaceholders(&expanded_items, mode_aware.view),
-                        .command => try expandPlaceholders(&expanded_items, mode_aware.command),
-                    }
+                .reload_aware => |reload_aware| switch (self.current_reload_indicator_state) {
+                    .idle => reload_aware.idle,
+                    .reload => reload_aware.reload,
+                    .watching => reload_aware.watching,
                 },
-                .reload_aware => |reload_aware| {
-                    switch (self.current_reload_indicator_state) {
-                        .idle => try expandPlaceholders(&expanded_items, reload_aware.idle),
-                        .reload => try expandPlaceholders(&expanded_items, reload_aware.reload),
-                        .watching => try expandPlaceholders(&expanded_items, reload_aware.watching),
-                    }
-                },
-            }
+            };
+            try expandPlaceholders(arena, &expanded_items, styled);
         }
 
         const items = expanded_items.items;
@@ -977,31 +952,38 @@ pub const Context = struct {
         }
     }
 
-    fn expandPlaceholders(list: *std.array_list.Managed(Config.StatusBar.StyledItem), styled_text: Config.StatusBar.StyledItem) !void {
+    fn expandPlaceholders(arena: std.mem.Allocator, list: *std.ArrayList(Config.StatusBar.StyledItem), styled_text: Config.StatusBar.StyledItem) !void {
         const text = styled_text.text;
         var last_index: usize = 0;
 
         while (last_index < text.len) {
             const open = std.mem.indexOfScalarPos(u8, text, last_index, '<') orelse {
                 if (last_index < text.len) {
-                    try list.append(.{ .text = text[last_index..], .style = styled_text.style });
+                    try list.append(arena, .{ .text = text[last_index..], .style = styled_text.style });
                 }
                 break;
             };
 
             if (open > last_index) {
-                try list.append(.{ .text = text[last_index..open], .style = styled_text.style });
+                try list.append(arena, .{ .text = text[last_index..open], .style = styled_text.style });
             }
 
             const close = std.mem.indexOfScalarPos(u8, text, open, '>') orelse {
-                try list.append(.{ .text = text[open..], .style = styled_text.style });
+                try list.append(arena, .{ .text = text[open..], .style = styled_text.style });
                 break;
             };
 
-            try list.append(.{ .text = text[open .. close + 1], .style = styled_text.style });
+            try list.append(arena, .{ .text = text[open .. close + 1], .style = styled_text.style });
 
             last_index = close + 1;
         }
+    }
+
+    fn stripDirPrefix(path: []const u8, dir: []const u8) ?[]const u8 {
+        if (!std.mem.startsWith(u8, path, dir)) return null;
+        var rel = path[dir.len..];
+        if (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+        return rel;
     }
 
     fn drawStatusText(self: *Self, status_bar: vaxis.Window, item: Config.StatusBar.StyledItem, col_offset: *usize, left_aligned: bool, allocator: std.mem.Allocator) !void {
@@ -1015,20 +997,16 @@ pub const Context = struct {
             const full_path = try cwd_dir.realPathFileAlloc(self.io, self.document_handler.getPath(), allocator);
             defer allocator.free(full_path);
 
-            if (std.mem.startsWith(u8, full_path, cwd)) {
-                var path = full_path[cwd.len..];
-                if (path.len > 0 and path[0] == '/') path = path[1..];
-                text = try std.fmt.allocPrint(allocator, "{s}", .{path});
+            if (stripDirPrefix(full_path, cwd)) |rel| {
+                text = try allocator.dupe(u8, rel);
             } else if (self.env.get("HOME")) |home| {
-                if (std.mem.startsWith(u8, full_path, home)) {
-                    var path = full_path[home.len..];
-                    if (path.len > 0 and path[0] == '/') path = path[1..];
-                    text = try std.fmt.allocPrint(allocator, "~/{s}", .{path});
+                if (stripDirPrefix(full_path, home)) |rel| {
+                    text = try std.fmt.allocPrint(allocator, "~/{s}", .{rel});
                 } else {
-                    text = try std.fmt.allocPrint(allocator, "{s}", .{full_path});
+                    text = try allocator.dupe(u8, full_path);
                 }
             } else {
-                text = try std.fmt.allocPrint(allocator, "{s}", .{full_path});
+                text = try allocator.dupe(u8, full_path);
             }
         } else if (std.mem.eql(u8, text, Config.StatusBar.PAGE)) {
             text = try std.fmt.allocPrint(allocator, "{}", .{self.document_handler.getCurrentPageNumber() + 1});

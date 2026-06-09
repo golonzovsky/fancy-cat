@@ -142,24 +142,7 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
 
         for (self.hints.items) |h| {
             if (std.mem.eql(u8, h.label, pfx)) {
-                const target = h.target;
-                switch (target) {
-                    .page => |dest| {
-                        self.context.pushJump();
-                        _ = self.context.document_handler.goToPage(dest.num + 1);
-                        self.context.document_handler.setScrollY(0);
-                        self.context.document_handler.setPendingScrollPdfY(dest.y);
-                        self.context.resetCurrentPage();
-                    },
-                    .uri => |uri| {
-                        _ = std.process.spawn(self.context.io, .{
-                            .argv = &.{ "open", uri },
-                            .stdin = .ignore,
-                            .stdout = .ignore,
-                            .stderr = .ignore,
-                        }) catch {};
-                    },
-                }
+                self.context.followLink(h.target);
                 self.context.changeMode(.view);
                 return;
             }

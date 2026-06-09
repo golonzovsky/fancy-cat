@@ -54,32 +54,7 @@ pub const FileMonitor = struct {
     reload_indicator_duration: f16 = 1.0,
 
     pub fn parse(val: std.json.Value, allocator: std.mem.Allocator) FileMonitor {
-        var file_monitor = FileMonitor{};
-        if (val != .object) return file_monitor;
-
-        file_monitor.enabled = parseType(
-            bool,
-            val.object,
-            "enabled",
-            allocator,
-            file_monitor.enabled,
-        );
-        file_monitor.latency = parseType(
-            f16,
-            val.object,
-            "latency",
-            allocator,
-            file_monitor.latency,
-        );
-        file_monitor.reload_indicator_duration = parseType(
-            f16,
-            val.object,
-            "reload_indicator_duration",
-            allocator,
-            file_monitor.reload_indicator_duration,
-        );
-
-        return file_monitor;
+        return parseFields(FileMonitor, val, allocator);
     }
 };
 
@@ -108,32 +83,20 @@ pub const General = struct {
         var general = General{};
         if (val != .object) return general;
 
-        general.colorize = parseType(bool, val.object, "colorize", allocator, general.colorize);
+        inline for (std.meta.fields(General)) |f| {
+            // white/black accept hex-string or {rgb} forms, not plain integers.
+            const is_color = comptime std.mem.eql(u8, f.name, "white") or std.mem.eql(u8, f.name, "black");
+            if (!is_color) {
+                @field(general, f.name) = parseType(f.type, val.object, f.name, allocator, @field(general, f.name));
+            }
+        }
 
         if (val.object.get("white")) |white| {
-            if (parseRGB(white, allocator)) |rgb| {
-                general.white = @intCast(
-                    (@as(u32, rgb[0]) << 16) | (@as(u32, rgb[1]) << 8) | @as(u32, rgb[2]),
-                );
-            }
+            if (parseRGB(white, allocator)) |rgb| general.white = rgbToInt(rgb);
         }
         if (val.object.get("black")) |black| {
-            if (parseRGB(black, allocator)) |rgb| {
-                general.black = @intCast(
-                    (@as(u32, rgb[0]) << 16) | (@as(u32, rgb[1]) << 8) | @as(u32, rgb[2]),
-                );
-            }
+            if (parseRGB(black, allocator)) |rgb| general.black = rgbToInt(rgb);
         }
-
-        general.size = parseType(f32, val.object, "size", allocator, general.size);
-        general.zoom_step = parseType(f32, val.object, "zoom_step", allocator, general.zoom_step);
-        general.zoom_min = parseType(f32, val.object, "zoom_min", allocator, general.zoom_min);
-        general.scroll_step = parseType(f32, val.object, "scroll_step", allocator, general.scroll_step);
-        general.retry_delay = parseType(f32, val.object, "retry_delay", allocator, general.retry_delay);
-        general.timeout = parseType(f32, val.object, "timeout", allocator, general.timeout);
-        general.detect_dpi = parseType(bool, val.object, "detect_dpi", allocator, general.detect_dpi);
-        general.dpi = parseType(f32, val.object, "dpi", allocator, general.dpi);
-        general.history = parseType(u32, val.object, "history", allocator, general.history);
 
         return general;
     }
@@ -214,14 +177,7 @@ pub const Cache = struct {
     lru_size: u16 = 10,
 
     pub fn parse(val: std.json.Value, allocator: std.mem.Allocator) Cache {
-        var cache = Cache{};
-        if (val != .object) return cache;
-
-        cache.enabled = parseType(bool, val.object, "enabled", allocator, cache.enabled);
-        // XXX temporary change to u16 from usize due to bug in std
-        cache.lru_size = parseType(u16, val.object, "lru_size", allocator, cache.lru_size);
-
-        return cache;
+        return parseFields(Cache, val, allocator);
     }
 };
 
@@ -311,6 +267,20 @@ fn parseType(comptime T: type, obj: std.json.ObjectMap, key: []const u8, allocat
     return fallback;
 }
 
+// Fills every field of T from the JSON object, keeping the default on miss/mismatch.
+fn parseFields(comptime T: type, val: std.json.Value, allocator: std.mem.Allocator) T {
+    var result = T{};
+    if (val != .object) return result;
+    inline for (std.meta.fields(T)) |f| {
+        @field(result, f.name) = parseType(f.type, val.object, f.name, allocator, @field(result, f.name));
+    }
+    return result;
+}
+
+fn rgbToInt(rgb: [3]u8) i32 {
+    return @intCast((@as(u32, rgb[0]) << 16) | (@as(u32, rgb[1]) << 8) | @as(u32, rgb[2]));
+}
+
 fn parseStyle(obj: std.json.ObjectMap, allocator: std.mem.Allocator, fallback: vaxis.Cell.Style) vaxis.Cell.Style {
     const val = obj.get("style") orelse return fallback;
     if (val != .object) return fallback;
@@ -376,72 +346,50 @@ fn parseItems(obj: std.json.ObjectMap, allocator: std.mem.Allocator, fallback_st
 }
 
 fn applyStyle(item: StatusBar.Item, style: vaxis.Cell.Style, allocator: std.mem.Allocator) StatusBar.Item {
-    var styled_item: StatusBar.Item = .{ .styled = StatusBar.StyledItem{ .text = "", .style = style } };
-    var mode_aware_item: StatusBar.Item = .{ .mode_aware = StatusBar.ModeAwareItem{
-        .view = StatusBar.StyledItem{ .text = "", .style = style },
-        .command = StatusBar.StyledItem{ .text = "", .style = style },
-    } };
-    var reload_aware_item: StatusBar.Item = .{ .reload_aware = StatusBar.ReloadAwareItem{
-        .idle = StatusBar.StyledItem{ .text = "", .style = style },
-        .reload = StatusBar.StyledItem{ .text = "", .style = style },
-        .watching = StatusBar.StyledItem{ .text = "", .style = style },
-    } };
+    const dupe = struct {
+        fn f(a: std.mem.Allocator, text: []const u8, s: vaxis.Cell.Style) StatusBar.StyledItem {
+            return .{ .text = a.dupe(u8, text) catch "", .style = s };
+        }
+    }.f;
 
-    switch (item) {
-        .styled => |styled| {
-            styled_item.styled.text = allocator.dupe(u8, styled.text) catch styled_item.styled.text;
-            return styled_item;
-        },
-        .mode_aware => |mode_aware| {
-            mode_aware_item.mode_aware.view.text = allocator.dupe(u8, mode_aware.view.text) catch mode_aware_item.mode_aware.view.text;
-            mode_aware_item.mode_aware.command.text = allocator.dupe(u8, mode_aware.command.text) catch mode_aware_item.mode_aware.command.text;
-            return mode_aware_item;
-        },
-        .reload_aware => |reload_aware| {
-            reload_aware_item.reload_aware.idle.text = allocator.dupe(u8, reload_aware.idle.text) catch reload_aware_item.reload_aware.idle.text;
-            reload_aware_item.reload_aware.reload.text = allocator.dupe(u8, reload_aware.reload.text) catch reload_aware_item.reload_aware.reload.text;
-            reload_aware_item.reload_aware.watching.text = allocator.dupe(u8, reload_aware.watching.text) catch reload_aware_item.reload_aware.watching.text;
-            return reload_aware_item;
-        },
-    }
+    return switch (item) {
+        .styled => |styled| .{ .styled = dupe(allocator, styled.text, style) },
+        .mode_aware => |mode_aware| .{ .mode_aware = .{
+            .view = dupe(allocator, mode_aware.view.text, style),
+            .command = dupe(allocator, mode_aware.command.text, style),
+        } },
+        .reload_aware => |reload_aware| .{ .reload_aware = .{
+            .idle = dupe(allocator, reload_aware.idle.text, style),
+            .reload = dupe(allocator, reload_aware.reload.text, style),
+            .watching = dupe(allocator, reload_aware.watching.text, style),
+        } },
+    };
 }
 
 fn parseItem(val: std.json.Value, allocator: std.mem.Allocator, fallback_style: vaxis.Cell.Style) StatusBar.Item {
-    var styled_item: StatusBar.Item = .{ .styled = StatusBar.StyledItem{ .text = "", .style = fallback_style } };
-    var mode_aware_item: StatusBar.Item = .{ .mode_aware = StatusBar.ModeAwareItem{
-        .view = StatusBar.StyledItem{ .text = "", .style = fallback_style },
-        .command = StatusBar.StyledItem{ .text = "", .style = fallback_style },
-    } };
-    var reload_aware_item: StatusBar.Item = .{ .reload_aware = StatusBar.ReloadAwareItem{
-        .idle = StatusBar.StyledItem{ .text = "", .style = fallback_style },
-        .reload = StatusBar.StyledItem{ .text = "", .style = fallback_style },
-        .watching = StatusBar.StyledItem{ .text = "", .style = fallback_style },
-    } };
+    const empty = StatusBar.StyledItem{ .text = "", .style = fallback_style };
 
     switch (val) {
-        .string => |str| {
-            styled_item.styled.text = allocator.dupe(u8, str) catch "";
-            return styled_item;
-        },
+        .string => |str| return .{ .styled = .{ .text = allocator.dupe(u8, str) catch "", .style = fallback_style } },
 
         .object => |obj| {
             if (obj.contains("view") or obj.contains("command")) {
-                mode_aware_item.mode_aware.view = parseStyledItem(obj.get("view"), allocator, mode_aware_item.mode_aware.view);
-                mode_aware_item.mode_aware.command = parseStyledItem(obj.get("command"), allocator, mode_aware_item.mode_aware.command);
-                return mode_aware_item;
+                return .{ .mode_aware = .{
+                    .view = parseStyledItem(obj.get("view"), allocator, empty),
+                    .command = parseStyledItem(obj.get("command"), allocator, empty),
+                } };
             }
             if (obj.contains("idle") or obj.contains("reload") or obj.contains("watching")) {
-                reload_aware_item.reload_aware.idle = parseStyledItem(obj.get("idle"), allocator, reload_aware_item.reload_aware.idle);
-                reload_aware_item.reload_aware.reload = parseStyledItem(obj.get("reload"), allocator, reload_aware_item.reload_aware.reload);
-                reload_aware_item.reload_aware.watching = parseStyledItem(obj.get("watching"), allocator, reload_aware_item.reload_aware.watching);
-                return reload_aware_item;
+                return .{ .reload_aware = .{
+                    .idle = parseStyledItem(obj.get("idle"), allocator, empty),
+                    .reload = parseStyledItem(obj.get("reload"), allocator, empty),
+                    .watching = parseStyledItem(obj.get("watching"), allocator, empty),
+                } };
             }
-
-            styled_item.styled = parseStyledItem(val, allocator, styled_item.styled);
-            return styled_item;
+            return .{ .styled = parseStyledItem(val, allocator, empty) };
         },
 
-        else => return styled_item,
+        else => return .{ .styled = empty },
     }
 }
 

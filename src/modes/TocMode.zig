@@ -141,11 +141,7 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
     if (key.matches(vaxis.Key.enter, .{})) {
         const e = self.entries[self.visible.items[self.cursor]];
         self.context.changeMode(.view);
-        self.context.pushJump();
-        _ = self.context.document_handler.goToPage(e.page + 1);
-        self.context.document_handler.setScrollY(0);
-        if (!std.math.isNan(e.y)) self.context.document_handler.setPendingScrollPdfY(e.y);
-        self.context.resetCurrentPage();
+        self.context.followLink(.{ .page = .{ .num = e.page, .y = e.y } });
         return;
     }
 }
