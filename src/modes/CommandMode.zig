@@ -192,10 +192,12 @@ fn handleSpread(self: *Self, cmd: []const u8) bool {
     return true;
 }
 
-// :crop          reset margins
-// :crop N        trim N pt on all sides
-// :crop L R      trim left/right
-// :crop L R T B  trim all four sides
+// CSS margin/padding shorthand order, in PDF points:
+// :crop          reset
+// :crop N        all sides
+// :crop V H      top/bottom, left/right
+// :crop T H B    top, left/right, bottom
+// :crop T R B L  clockwise
 fn handleCrop(self: *Self, cmd: []const u8) bool {
     if (!std.mem.startsWith(u8, cmd, "crop")) return false;
     const rest = std.mem.trim(u8, cmd["crop".len..], &std.ascii.whitespace);
@@ -209,14 +211,16 @@ fn handleCrop(self: *Self, cmd: []const u8) bool {
         n += 1;
     }
 
-    const crop: [4]f32 = switch (n) {
+    // top, right, bottom, left
+    const trbl: [4]f32 = switch (n) {
         0 => .{ 0, 0, 0, 0 },
         1 => .{ vals[0], vals[0], vals[0], vals[0] },
-        2 => .{ vals[0], vals[1], 0, 0 },
+        2 => .{ vals[0], vals[1], vals[0], vals[1] },
+        3 => .{ vals[0], vals[1], vals[2], vals[1] },
         4 => vals,
-        else => return false,
+        else => unreachable,
     };
-    self.context.document_handler.setMarginCrop(crop[0], crop[1], crop[2], crop[3]);
+    self.context.document_handler.setMarginCrop(trbl[3], trbl[1], trbl[0], trbl[2]);
     self.context.cache.clear();
     self.context.resetCurrentPage();
     return true;

@@ -1158,9 +1158,10 @@ pub const Context = struct {
             else
                 "";
         } else if (std.mem.eql(u8, text, Config.StatusBar.CROP)) {
+            // CSS order (T R B L), matching what :crop accepts.
             text = if (self.document_handler.cropInfo()) |ci|
                 try std.fmt.allocPrint(allocator, " CROP{s} {d:.0} {d:.0} {d:.0} {d:.0} ", .{
-                    if (ci.auto) "*" else "", ci.left, ci.right, ci.top, ci.bottom,
+                    if (ci.auto) "*" else "", ci.top, ci.right, ci.bottom, ci.left,
                 })
             else
                 "";

@@ -29,7 +29,7 @@ const cmd_lines = [_]Line{
     .{ .keys = ":oddx N", .label = "shift odd pages (pt)" },
     .{ .keys = ":hlock", .label = "lock horiz scroll" },
     .{ .keys = ":spread", .label = "2-column spread" },
-    .{ .keys = ":crop L R", .label = "trim margins (pt)" },
+    .{ .keys = ":crop TRBL", .label = "trim margins, css" },
     .{ .keys = ":crop", .label = "reset margin trim" },
     .{ .keys = ":help", .label = "this help" },
     .{ .keys = ":q", .label = "quit" },
