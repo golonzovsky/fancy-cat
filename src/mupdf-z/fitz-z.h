@@ -13,6 +13,9 @@ void fz_walk_outline_z(fz_context *ctx, fz_document *doc, void *userdata, fz_out
 int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size);
 // Computes the tight bounding box of all drawn content on a page. Returns 1 on success.
 int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out);
+// Searches one page for needle (case-insensitive). Fills up to max_quads hit quads;
+// returns the hit count (0 on error or no match).
+int fz_search_page_z(fz_context *ctx, fz_document *doc, int page_number, const char *needle, fz_quad *quads, int max_quads);
 // Streaming-style page extractor. The C side walks mupdf's stext, filters footers and
 // diagram-vs-text regions, rasterizes vector diagrams to PNG, and surfaces structured events
 // to the Zig caller, which is responsible for all markdown formatting.

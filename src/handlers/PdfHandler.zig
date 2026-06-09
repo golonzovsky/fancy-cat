@@ -20,10 +20,11 @@ ctx: [*c]c.fz_context,
 doc: [*c]c.fz_document,
 total_pages: u16,
 current_page_number: u16,
-path: []const u8,
+path: [:0]const u8,
 active_zoom: f32,
 default_zoom: f32,
 width_mode: bool,
+spread: bool,
 crop_to_content: bool,
 crop_margin: f32,
 odd_shift_x: i32,
@@ -32,12 +33,13 @@ pix_scroll_x: i32,
 pix_scroll_y: i32,
 rendered_w: u32,
 last_viewport_w: u32,
+search_highlights: []const SearchHit,
 config: *Config,
 
 pub fn init(
     allocator: std.mem.Allocator,
     io: std.Io,
-    path: []const u8,
+    path: [:0]const u8,
     initial_page: ?u16,
     config: *Config,
 ) !Self {
@@ -82,6 +84,7 @@ pub fn init(
         .active_zoom = 0,
         .default_zoom = 0,
         .width_mode = false,
+        .spread = false,
         .crop_to_content = false,
         .crop_margin = 4,
         .odd_shift_x = 0,
@@ -90,6 +93,7 @@ pub fn init(
         .pix_scroll_y = 0,
         .rendered_w = 0,
         .last_viewport_w = 0,
+        .search_highlights = &.{},
         .config = config,
     };
 }
@@ -143,11 +147,34 @@ pub fn goToPage(self: *Self, page_num: u16) bool {
     return false;
 }
 
-pub fn changePage(self: *Self, delta: i32) bool {
-    const new_page = @as(i32, @intCast(self.current_page_number)) + delta;
+// A "render unit" is what one renderPage call shows: a single page, or in
+// spread mode a facing pair — page 0 alone, then (1,2), (3,4), ...
+pub fn renderUnitStart(self: *const Self, page: u16) u16 {
+    if (!self.spread or page == 0) return page;
+    return if (page % 2 == 1) page else page - 1;
+}
 
-    if (new_page >= 0 and new_page < self.total_pages) {
-        self.current_page_number = @as(u16, @intCast(new_page));
+pub fn nextRenderUnit(self: *const Self, page: u16) ?u16 {
+    const start = self.renderUnitStart(page);
+    const next: u32 = if (!self.spread) @as(u32, start) + 1 else if (start == 0) 1 else @as(u32, start) + 2;
+    if (next >= self.total_pages) return null;
+    return @intCast(next);
+}
+
+pub fn prevRenderUnit(self: *const Self, page: u16) ?u16 {
+    const start = self.renderUnitStart(page);
+    if (start == 0) return null;
+    return self.renderUnitStart(start - 1);
+}
+
+pub fn changePage(self: *Self, delta: i32) bool {
+    var page = self.current_page_number;
+    var i = delta;
+    while (i > 0) : (i -= 1) page = self.nextRenderUnit(page) orelse break;
+    while (i < 0) : (i += 1) page = self.prevRenderUnit(page) orelse break;
+
+    if (page != self.current_page_number) {
+        self.current_page_number = page;
         return true;
     }
     return false;
@@ -155,7 +182,8 @@ pub fn changePage(self: *Self, delta: i32) bool {
 
 fn calculateZoomLevel(self: *Self, window_width: u32, window_height: u32, bound: c.fz_rect) void {
     var scale: f32 = 0;
-    if (self.width_mode) {
+    // Spread reads as a continuous two-column flow: fill the width and scroll.
+    if (self.width_mode or self.spread) {
         scale = @as(f32, @floatFromInt(window_width)) / bound.x1;
     } else {
         scale = @min(
@@ -176,6 +204,42 @@ fn calculateZoomLevel(self: *Self, window_width: u32, window_height: u32, bound:
     self.active_zoom = @max(self.active_zoom, self.config.general.zoom_min);
 }
 
+const RenderBound = struct { bound: c.fz_rect, ox: f32, oy: f32 };
+
+fn pageRenderBound(self: *Self, page: [*c]c.fz_page) RenderBound {
+    const page_bound = c.fz_bound_page(self.ctx, page);
+    var rb = RenderBound{ .bound = page_bound, .ox = 0, .oy = 0 };
+    if (self.crop_to_content) {
+        var content_bbox: c.fz_rect = undefined;
+        if (c.fz_page_content_bbox_z(self.ctx, page, &content_bbox) != 0) {
+            const m = self.crop_margin;
+            content_bbox.x0 = @max(page_bound.x0, content_bbox.x0 - m);
+            content_bbox.y0 = @max(page_bound.y0, content_bbox.y0 - m);
+            content_bbox.x1 = @min(page_bound.x1, content_bbox.x1 + m);
+            content_bbox.y1 = @min(page_bound.y1, content_bbox.y1 + m);
+            if (content_bbox.x1 > content_bbox.x0 and content_bbox.y1 > content_bbox.y0) {
+                rb = .{ .bound = content_bbox, .ox = content_bbox.x0, .oy = content_bbox.y0 };
+            }
+        }
+    }
+    return rb;
+}
+
+fn runPageInto(self: *Self, page: [*c]c.fz_page, ctm: c.fz_matrix, pix: [*c]c.fz_pixmap) void {
+    const dev = c.fz_new_draw_device(self.ctx, ctm, pix);
+    defer c.fz_drop_device(self.ctx, dev);
+    c.fz_run_page(self.ctx, page, dev, c.fz_identity, null);
+    c.fz_close_device(self.ctx, dev);
+}
+
+fn highlightHits(self: *Self, pix: [*c]c.fz_pixmap, page_num: u16, ctm: c.fz_matrix) void {
+    for (self.search_highlights) |h| {
+        if (h.page != page_num) continue;
+        const r = c.fz_transform_rect(c.fz_make_rect(h.x0, h.y0, h.x1, h.y1), ctm);
+        c.fz_invert_pixmap_rect(self.ctx, pix, c.fz_irect_from_rect(r));
+    }
+}
+
 pub fn renderPage(
     self: *Self,
     page_number: u16,
@@ -193,55 +257,57 @@ pub fn renderPage(
             return types.DocumentError.FailedToRenderPage;
         }
 
-        const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number))) orelse {
+        const start = self.renderUnitStart(page_number);
+        const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(start))) orelse {
             time.sleep(retry_delay);
             continue;
         };
         defer c.fz_drop_page(self.ctx, page);
-        const page_bound = c.fz_bound_page(self.ctx, page);
 
-        var render_bound = page_bound;
-        var origin_x: f32 = 0;
-        var origin_y: f32 = 0;
-        if (self.crop_to_content) {
-            var content_bbox: c.fz_rect = undefined;
-            if (c.fz_page_content_bbox_z(self.ctx, page, &content_bbox) != 0) {
-                const m = self.crop_margin;
-                content_bbox.x0 = @max(page_bound.x0, content_bbox.x0 - m);
-                content_bbox.y0 = @max(page_bound.y0, content_bbox.y0 - m);
-                content_bbox.x1 = @min(page_bound.x1, content_bbox.x1 + m);
-                content_bbox.y1 = @min(page_bound.y1, content_bbox.y1 + m);
-                if (content_bbox.x1 > content_bbox.x0 and content_bbox.y1 > content_bbox.y0) {
-                    render_bound = content_bbox;
-                    origin_x = content_bbox.x0;
-                    origin_y = content_bbox.y0;
-                }
-            }
+        // Right-hand page of the spread, when there is one.
+        var page_b: [*c]c.fz_page = null;
+        defer if (page_b != null) c.fz_drop_page(self.ctx, page_b);
+        if (self.spread and start != 0 and start + 1 < self.total_pages) {
+            page_b = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(start + 1))) orelse null;
         }
 
-        const render_w_pdf = render_bound.x1 - render_bound.x0;
-        const render_h_pdf = render_bound.y1 - render_bound.y0;
-        self.calculateZoomLevel(window_width, window_height, c.fz_make_rect(0, 0, render_w_pdf, render_h_pdf));
+        const rb_a = self.pageRenderBound(page);
+        const w_a = rb_a.bound.x1 - rb_a.bound.x0;
+        const h_a = rb_a.bound.y1 - rb_a.bound.y0;
+        const gap: f32 = 8;
+        var rb_b: RenderBound = undefined;
+        var total_w = w_a;
+        var total_h = h_a;
+        if (page_b != null) {
+            rb_b = self.pageRenderBound(page_b);
+            total_w = w_a + gap + (rb_b.bound.x1 - rb_b.bound.x0);
+            total_h = @max(h_a, rb_b.bound.y1 - rb_b.bound.y0);
+        }
 
-        const full_w = @max(1.0, self.active_zoom * render_w_pdf);
-        const full_h = @max(1.0, self.active_zoom * render_h_pdf);
+        self.calculateZoomLevel(window_width, window_height, c.fz_make_rect(0, 0, total_w, total_h));
+
+        const full_w = @max(1.0, self.active_zoom * total_w);
+        const full_h = @max(1.0, self.active_zoom * total_h);
 
         const bbox = c.fz_make_irect(0, 0, @intFromFloat(full_w), @intFromFloat(full_h));
         const pix = c.fz_new_pixmap_with_bbox(self.ctx, c.fz_device_rgb(self.ctx), bbox, null, 0);
         defer c.fz_drop_pixmap(self.ctx, pix);
         c.fz_clear_pixmap_with_value(self.ctx, pix, 0xFF);
 
-        var ctm = c.fz_scale(self.active_zoom, self.active_zoom);
-        const shift_pdf: f32 = if (page_number % 2 == 1 and self.active_zoom > 0)
+        const scale = c.fz_scale(self.active_zoom, self.active_zoom);
+        const shift_pdf: f32 = if (!self.spread and page_number % 2 == 1 and self.active_zoom > 0)
             @as(f32, @floatFromInt(self.odd_shift_x)) / self.active_zoom
         else
             0;
-        ctm = c.fz_pre_translate(ctm, -origin_x + shift_pdf, -origin_y);
+        const ctm = c.fz_pre_translate(scale, -rb_a.ox + shift_pdf, -rb_a.oy);
+        self.runPageInto(page, ctm, pix);
+        self.highlightHits(pix, start, ctm);
 
-        const dev = c.fz_new_draw_device(self.ctx, ctm, pix);
-        defer c.fz_drop_device(self.ctx, dev);
-        c.fz_run_page(self.ctx, page, dev, c.fz_identity, null);
-        c.fz_close_device(self.ctx, dev);
+        if (page_b != null) {
+            const ctm_b = c.fz_pre_translate(scale, -rb_b.ox + w_a + gap, -rb_b.oy);
+            self.runPageInto(page_b, ctm_b, pix);
+            self.highlightHits(pix, start + 1, ctm_b);
+        }
 
         if (self.config.general.colorize) {
             c.fz_tint_pixmap(self.ctx, pix, self.config.general.black, self.config.general.white);
@@ -264,8 +330,8 @@ pub fn renderPage(
             .base64 = encoded,
             .width = @as(u16, @intCast(width)),
             .height = @as(u16, @intCast(height)),
-            .origin_x = origin_x,
-            .origin_y = origin_y,
+            .origin_x = rb_a.ox,
+            .origin_y = rb_a.oy,
         };
     }
 }
@@ -335,6 +401,20 @@ pub fn toggleWidthMode(self: *Self) void {
     self.pix_scroll_x = 0;
     self.pix_scroll_y = 0;
 }
+
+pub fn getSpread(self: *Self) bool {
+    return self.spread;
+}
+
+pub fn toggleSpread(self: *Self) void {
+    self.spread = !self.spread;
+    self.default_zoom = 0;
+    self.active_zoom = 0;
+    self.pix_scroll_x = 0;
+    self.pix_scroll_y = 0;
+}
+
+pub const SearchHit = struct { page: u16, x0: f32, y0: f32, x1: f32, y1: f32 };
 
 pub const PageTarget = struct { num: u16, y: f32 };
 
@@ -556,6 +636,19 @@ pub fn getOddShiftX(self: *Self) i32 {
 
 pub fn setPendingScrollPdfY(self: *Self, y: f32) void {
     self.pending_scroll_pdf_y = y;
+}
+
+pub fn setSearchHighlights(self: *Self, hits: []const SearchHit) void {
+    self.search_highlights = hits;
+}
+
+pub fn searchPage(self: *Self, allocator: std.mem.Allocator, page_number: u16, needle: [*:0]const u8, out: *std.ArrayList(SearchHit)) !void {
+    var quads: [128]c.fz_quad = undefined;
+    const n = c.fz_search_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number)), needle, &quads, quads.len);
+    for (quads[0..@intCast(n)]) |q| {
+        const r = c.fz_rect_from_quad(q);
+        try out.append(allocator, .{ .page = page_number, .x0 = r.x0, .y0 = r.y0, .x1 = r.x1, .y1 = r.y1 });
+    }
 }
 
 pub fn takePendingScrollPdfY(self: *Self) ?f32 {

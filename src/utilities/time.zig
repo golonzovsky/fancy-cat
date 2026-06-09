@@ -10,12 +10,19 @@ const c = struct {
     pub extern "c" fn nanosleep(req: *const timespec, rem: ?*timespec) c_int;
 };
 
-const CLOCK_MONOTONIC: c_int = 6; // macOS value
+const CLOCK_MONOTONIC: c_int = 6; // macOS values
+const CLOCK_REALTIME: c_int = 0;
 
 pub fn nowNs() i64 {
     var ts: c.timespec = undefined;
     _ = c.clock_gettime(CLOCK_MONOTONIC, &ts);
     return @as(i64, ts.tv_sec) * std.time.ns_per_s + @as(i64, ts.tv_nsec);
+}
+
+pub fn nowRealSeconds() i64 {
+    var ts: c.timespec = undefined;
+    _ = c.clock_gettime(CLOCK_REALTIME, &ts);
+    return @as(i64, ts.tv_sec);
 }
 
 pub fn milliTimestamp() i64 {

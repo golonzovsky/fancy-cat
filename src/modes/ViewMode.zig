@@ -19,6 +19,7 @@ const bindings = .{
     .{ "zoom_out", zoomOut },
     .{ "width_mode", toggleWidthMode },
     .{ "crop_to_content", toggleCrop },
+    .{ "toggle_spread", toggleSpread },
     .{ "full_screen", toggleStatusBar },
     .{ "scroll_up", scrollUp },
     .{ "scroll_down", scrollDown },
@@ -36,6 +37,10 @@ const bindings = .{
     .{ "open_in_editor", openPageInEditor },
     .{ "open_chapter_in_editor", openChapterInEditor },
     .{ "show_help", showHelp },
+    .{ "search", enterSearch },
+    .{ "search_next", Context.searchNext },
+    .{ "search_prev", Context.searchPrev },
+    .{ "exit_command_mode", Context.clearSearch },
 };
 
 pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
@@ -87,6 +92,11 @@ fn toggleCrop(ctx: *Context) void {
     ctx.reload_page = true;
 }
 
+fn toggleSpread(ctx: *Context) void {
+    ctx.document_handler.toggleSpread();
+    ctx.reload_page = true;
+}
+
 fn toggleStatusBar(ctx: *Context) void {
     ctx.toggleFullScreen();
     ctx.document_handler.resetDefaultZoom();
@@ -132,6 +142,10 @@ fn enterMarks(ctx: *Context) void {
 
 fn showHelp(ctx: *Context) void {
     ctx.changeMode(.help);
+}
+
+fn enterSearch(ctx: *Context) void {
+    ctx.changeMode(.search);
 }
 
 fn startSetMark(ctx: *Context) void {

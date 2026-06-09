@@ -118,6 +118,7 @@ pub fn executeCommand(self: *Self, cmd: []const u8) void {
     if (self.handleHelp(cmd)) return;
     if (self.handleAltShift(cmd)) return;
     if (self.handleHLock(cmd)) return;
+    if (self.handleSpread(cmd)) return;
     if (self.handleMarks(cmd)) return;
     if (self.handleMarkComment(cmd)) return;
     if (self.handleDelMark(cmd)) return;
@@ -180,6 +181,13 @@ fn handleDelMark(self: *Self, cmd: []const u8) bool {
 fn handleHLock(self: *Self, cmd: []const u8) bool {
     if (!std.mem.eql(u8, cmd, "hlock")) return false;
     self.context.lock_horizontal_scroll = !self.context.lock_horizontal_scroll;
+    return true;
+}
+
+fn handleSpread(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.eql(u8, cmd, "spread")) return false;
+    self.context.document_handler.toggleSpread();
+    self.context.resetCurrentPage();
     return true;
 }
 

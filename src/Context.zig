@@ -6,6 +6,7 @@ const HintMode = @import("modes/HintMode.zig");
 const MarksMode = @import("modes/MarksMode.zig");
 const TocMode = @import("modes/TocMode.zig");
 const HelpMode = @import("modes/HelpMode.zig");
+const SearchMode = @import("modes/SearchMode.zig");
 const fzwatch = @import("fzwatch");
 const Config = @import("config/Config.zig");
 const PdfHandler = @import("handlers/PdfHandler.zig");
@@ -13,6 +14,7 @@ const Cache = @import("./Cache.zig");
 const ReloadIndicatorTimer = @import("services/ReloadIndicatorTimer.zig");
 const History = @import("services/History.zig");
 const Positions = @import("services/Positions.zig");
+const time = @import("utilities/time.zig");
 
 pub const panic = vaxis.panic_handler;
 
@@ -24,8 +26,8 @@ pub const Event = union(enum) {
     reload_done: usize,
 };
 
-pub const ModeType = enum { view, command, hint, marks, toc, help };
-pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode, toc: TocMode, help: HelpMode };
+pub const ModeType = enum { view, command, hint, marks, toc, help, search };
+pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode, toc: TocMode, help: HelpMode, search: SearchMode };
 pub const ReloadIndicatorState = enum { idle, reload, watching };
 
 pub const VisiblePage = struct {
@@ -69,6 +71,8 @@ pub const Context = struct {
     history: History,
     positions: Positions,
     doc_key: []u8,
+    doc_abs_path: []u8,
+    outline: []const PdfHandler.OutlineEntry,
     reload_page: bool,
     cache: Cache,
     reload_indicator_timer: ReloadIndicatorTimer,
@@ -86,14 +90,11 @@ pub const Context = struct {
     pending_op: ?enum { set_mark, jump_mark },
     progress_text: ?[]const u8,
     progress_buf: [128]u8,
+    search_hits: std.ArrayList(PdfHandler.SearchHit),
+    search_needle: []u8,
+    search_index: usize,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !Self {
-        const path = args[1];
-        const initial_page = if (args.len == 3)
-            try std.fmt.parseInt(u16, args[2], 10)
-        else
-            null;
-
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, path: [:0]const u8, initial_page: ?u16) !Self {
         const config = try allocator.create(Config);
         errdefer allocator.destroy(config);
         config.* = Config.init(allocator, io, env);
@@ -105,6 +106,9 @@ pub const Context = struct {
         const doc_key = try document_handler.getDocumentKey(allocator);
         errdefer allocator.free(doc_key);
 
+        const doc_abs_path = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch try allocator.dupe(u8, path);
+        errdefer allocator.free(doc_abs_path);
+
         var positions = Positions.init(allocator, io, env, config, doc_key);
         errdefer positions.deinit();
         if (initial_page == null) {
@@ -112,10 +116,13 @@ pub const Context = struct {
                 if (pos.page < document_handler.getTotalPages()) {
                     document_handler.setCurrentPage(pos.page);
                     config.general.colorize = pos.colorize;
-                    // Crop first: toggleCropToContent resets zoom/scroll, so it must
-                    // run before we restore them or it wipes the restored values.
+                    // Crop/spread first: their toggles reset zoom/scroll, so they must
+                    // run before we restore them or they wipe the restored values.
                     if (pos.crop != document_handler.getCropToContent()) {
                         document_handler.toggleCropToContent();
+                    }
+                    if (pos.spread != document_handler.getSpread()) {
+                        document_handler.toggleSpread();
                     }
                     document_handler.setScrollX(pos.scroll_x);
                     document_handler.setScrollY(pos.scroll_y);
@@ -133,6 +140,8 @@ pub const Context = struct {
             watcher = try fzwatch.Watcher.init(allocator);
             if (watcher) |*w| try w.addFile(path);
         }
+
+        const outline = document_handler.loadOutline(allocator) catch &.{};
 
         const vx = try vaxis.init(io, allocator, env, .{});
         const buf = try allocator.alloc(u8, 4096);
@@ -159,6 +168,8 @@ pub const Context = struct {
             .history = history,
             .positions = positions,
             .doc_key = doc_key,
+            .doc_abs_path = doc_abs_path,
+            .outline = outline,
             .reload_page = true,
             .cache = Cache.init(allocator, config.cache.lru_size),
             .reload_indicator_timer = reload_indicator_timer,
@@ -176,6 +187,9 @@ pub const Context = struct {
             .pending_op = null,
             .progress_text = null,
             .progress_buf = undefined,
+            .search_hits = .empty,
+            .search_needle = &.{},
+            .search_index = 0,
         };
     }
 
@@ -189,6 +203,9 @@ pub const Context = struct {
             .colorize = self.config.general.colorize,
             .crop = self.document_handler.getCropToContent(),
             .hlock = self.lock_horizontal_scroll,
+            .spread = self.document_handler.getSpread(),
+            .path = self.doc_abs_path,
+            .last_opened = time.nowRealSeconds(),
         }, self.marks.items);
     }
 
@@ -199,7 +216,11 @@ pub const Context = struct {
         }
         self.marks.deinit(self.allocator);
         self.positions.deinit();
+        self.freeOutline();
+        self.search_hits.deinit(self.allocator);
+        if (self.search_needle.len > 0) self.allocator.free(self.search_needle);
         self.allocator.free(self.doc_key);
+        self.allocator.free(self.doc_abs_path);
         self.jump_back.deinit(self.allocator);
         self.jump_forward.deinit(self.allocator);
         self.deinitCurrentMode();
@@ -378,6 +399,8 @@ pub const Context = struct {
             },
             .file_changed => {
                 try self.document_handler.reloadDocument();
+                self.freeOutline();
+                self.outline = self.document_handler.loadOutline(self.allocator) catch &.{};
                 self.cache.clear();
                 self.reload_page = true;
                 if (self.reload_indicator_active) {
@@ -397,13 +420,15 @@ pub const Context = struct {
         window_width: u32,
         window_height: u32,
     ) !Cache.CachedImage {
+        const spread = self.document_handler.getSpread();
         const cache_key = Cache.Key{
             .colorize = self.config.general.colorize,
-            .page = page_number,
+            .page = self.document_handler.renderUnitStart(page_number),
             .width_mode = self.document_handler.getWidthMode(),
             .zoom = @as(u32, @intFromFloat(self.document_handler.getActiveZoom() * 1000.0)),
             .crop = self.document_handler.getCropToContent(),
-            .shift_x = if (page_number % 2 == 1) self.document_handler.getOddShiftX() else 0,
+            .spread = spread,
+            .shift_x = if (!spread and page_number % 2 == 1) self.document_handler.getOddShiftX() else 0,
         };
 
         if (self.config.cache.enabled) {
@@ -442,13 +467,13 @@ pub const Context = struct {
         self.visible_pages_len = 0;
 
         var viewport_rows: u16 = win.height;
-        if (self.config.status_bar.enabled or self.current_mode == .command) viewport_rows -|= 1;
+        if (self.config.status_bar.enabled or self.current_mode == .command or self.current_mode == .search) viewport_rows -|= 1;
         const viewport_w_pix: u32 = @as(u32, win.width) * @as(u32, pix_per_col);
         const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
 
         if (self.current_mode == .marks or self.current_mode == .toc or self.current_mode == .help) return;
 
-        var page_num = self.document_handler.getCurrentPageNumber();
+        var page_num = self.document_handler.renderUnitStart(self.document_handler.getCurrentPageNumber());
         const total_pages = self.document_handler.getTotalPages();
         var cur = try self.getPage(page_num, viewport_w_pix, viewport_h_pix);
 
@@ -465,21 +490,23 @@ pub const Context = struct {
 
         var scroll_y: i32 = self.document_handler.getScrollY();
 
-        while (scroll_y < 0 and page_num > 0) {
-            const prev = try self.getPage(page_num - 1, viewport_w_pix, viewport_h_pix);
+        while (scroll_y < 0) {
+            const prev_unit = self.document_handler.prevRenderUnit(page_num) orelse break;
+            const prev = try self.getPage(prev_unit, viewport_w_pix, viewport_h_pix);
             scroll_y += @as(i32, @intCast(prev.image.height));
-            page_num -= 1;
+            page_num = prev_unit;
             cur = prev;
         }
 
-        while (page_num + 1 < total_pages and scroll_y >= @as(i32, @intCast(cur.image.height))) {
+        while (scroll_y >= @as(i32, @intCast(cur.image.height))) {
+            const next_unit = self.document_handler.nextRenderUnit(page_num) orelse break;
             scroll_y -= @as(i32, @intCast(cur.image.height));
-            page_num += 1;
-            cur = try self.getPage(page_num, viewport_w_pix, viewport_h_pix);
+            page_num = next_unit;
+            cur = try self.getPage(next_unit, viewport_w_pix, viewport_h_pix);
         }
 
-        if (page_num == 0 and scroll_y < 0) scroll_y = 0;
-        if (page_num + 1 == total_pages) {
+        if (scroll_y < 0 and self.document_handler.prevRenderUnit(page_num) == null) scroll_y = 0;
+        if (self.document_handler.nextRenderUnit(page_num) == null) {
             const max_y = @max(0, @as(i32, @intCast(cur.image.height)) - @as(i32, @intCast(viewport_h_pix)));
             if (scroll_y > max_y) scroll_y = max_y;
         }
@@ -505,14 +532,14 @@ pub const Context = struct {
             const clip_top: u32 = @intCast(@max(0, first_top));
             const img_h: u32 = img.height;
             if (clip_top >= img_h) {
-                draw_page += 1;
+                draw_page = self.document_handler.nextRenderUnit(draw_page) orelse break;
                 first_top = 0;
                 continue;
             }
             const remaining_vp = viewport_h_pix - y_pix_used;
             const visible_h: u32 = @min(remaining_vp, img_h - clip_top);
             if (visible_h == 0) {
-                draw_page += 1;
+                draw_page = self.document_handler.nextRenderUnit(draw_page) orelse break;
                 first_top = 0;
                 continue;
             }
@@ -562,7 +589,7 @@ pub const Context = struct {
 
             y_pix_used += @as(u32, dest_rows) * @as(u32, pix_per_row);
             first_top = 0;
-            draw_page += 1;
+            draw_page = self.document_handler.nextRenderUnit(draw_page) orelse break;
         }
     }
 
@@ -708,13 +735,25 @@ pub const Context = struct {
         try self.spawnEditorAndWait(path, dir, null);
     }
 
+    fn freeOutline(self: *Self) void {
+        for (self.outline) |e| self.allocator.free(e.title);
+        if (self.outline.len > 0) self.allocator.free(self.outline);
+        self.outline = &.{};
+    }
+
+    // Title of the deepest outline entry at or before `page` ("current section").
+    pub fn chapterFor(self: *Self, page: u16) []const u8 {
+        var title: []const u8 = "";
+        for (self.outline) |e| {
+            if (e.page > page) break;
+            title = e.title;
+        }
+        return title;
+    }
+
     fn currentChapterRange(self: *Self, current_page: u16) struct { start: u16, end: u16 } {
         const total = self.document_handler.getTotalPages();
-        const entries = self.document_handler.loadOutline(self.allocator) catch return .{ .start = current_page, .end = current_page + 1 };
-        defer {
-            for (entries) |e| self.allocator.free(e.title);
-            self.allocator.free(entries);
-        }
+        const entries = self.outline;
         if (entries.len == 0) return .{ .start = current_page, .end = current_page + 1 };
 
         var min_depth: u8 = 255;
@@ -743,15 +782,19 @@ pub const Context = struct {
         return .{ .start = start, .end = end };
     }
 
-    fn progressCallback(ud: ?*anyopaque, current: c_int, total: c_int) callconv(.c) void {
-        const self = @as(*Self, @ptrCast(@alignCast(ud.?)));
-        const msg = std.fmt.bufPrint(&self.progress_buf, " Rendering chapter {d}/{d} ", .{ current, total }) catch return;
+    fn flashProgress(self: *Self, comptime fmt: []const u8, args: anytype) void {
+        const msg = std.fmt.bufPrint(&self.progress_buf, fmt, args) catch return;
         self.progress_text = msg;
         const win = self.vx.window();
         self.drawStatusBar(win) catch return;
         var w = self.tty.writer();
         self.vx.render(w) catch return;
         w.flush() catch return;
+    }
+
+    fn progressCallback(ud: ?*anyopaque, current: c_int, total: c_int) callconv(.c) void {
+        const self = @as(*Self, @ptrCast(@alignCast(ud.?)));
+        self.flashProgress(" Rendering chapter {d}/{d} ", .{ current, total });
     }
 
     fn extractRangeToEditor(self: *Self, dir: []const u8, name: []const u8, start: u16, end: u16) !void {
@@ -777,11 +820,7 @@ pub const Context = struct {
     }
 
     pub fn openOutlineInEditor(self: *Self, selected_index: ?usize) !void {
-        const entries = self.document_handler.loadOutline(self.allocator) catch return;
-        defer {
-            for (entries) |e| self.allocator.free(e.title);
-            self.allocator.free(entries);
-        }
+        const entries = self.outline;
         if (entries.len == 0) return;
 
         const pid = std.c.getpid();
@@ -979,6 +1018,74 @@ pub const Context = struct {
         }
     }
 
+    pub fn runSearch(self: *Self, needle: []const u8) !void {
+        self.clearSearch();
+        if (needle.len == 0) return;
+        self.search_needle = try self.allocator.dupe(u8, needle);
+        const needle_z = try self.allocator.dupeZ(u8, needle);
+        defer self.allocator.free(needle_z);
+
+        const total = self.document_handler.getTotalPages();
+        var page: u16 = 0;
+        while (page < total) : (page += 1) {
+            if (page % 64 == 0 and total > 128) {
+                self.flashProgress(" Searching {d}/{d} ", .{ page + 1, total });
+            }
+            try self.document_handler.searchPage(self.allocator, page, needle_z, &self.search_hits);
+        }
+        self.progress_text = null;
+        self.document_handler.setSearchHighlights(self.search_hits.items);
+        self.cache.clear();
+        self.reload_page = true;
+        if (self.search_hits.items.len == 0) return;
+
+        const cur = self.document_handler.getCurrentPageNumber();
+        self.search_index = 0;
+        for (self.search_hits.items, 0..) |h, i| {
+            if (h.page >= cur) {
+                self.search_index = i;
+                break;
+            }
+        }
+        self.gotoHit(self.search_index);
+    }
+
+    pub fn clearSearch(self: *Self) void {
+        if (self.search_hits.items.len == 0 and self.search_needle.len == 0) return;
+        self.search_hits.clearRetainingCapacity();
+        self.document_handler.setSearchHighlights(&.{});
+        if (self.search_needle.len > 0) {
+            self.allocator.free(self.search_needle);
+            self.search_needle = &.{};
+        }
+        self.search_index = 0;
+        self.cache.clear();
+        self.reload_page = true;
+    }
+
+    fn gotoHit(self: *Self, index: usize) void {
+        const h = self.search_hits.items[index];
+        self.pushJump();
+        self.document_handler.setCurrentPage(h.page);
+        self.document_handler.setScrollY(0);
+        self.document_handler.setPendingScrollPdfY(h.y0);
+        self.resetCurrentPage();
+    }
+
+    pub fn searchNext(self: *Self) void {
+        const n = self.search_hits.items.len;
+        if (n == 0) return;
+        self.search_index = (self.search_index + 1) % n;
+        self.gotoHit(self.search_index);
+    }
+
+    pub fn searchPrev(self: *Self) void {
+        const n = self.search_hits.items.len;
+        if (n == 0) return;
+        self.search_index = if (self.search_index == 0) n - 1 else self.search_index - 1;
+        self.gotoHit(self.search_index);
+    }
+
     fn stripDirPrefix(path: []const u8, dir: []const u8) ?[]const u8 {
         if (!std.mem.startsWith(u8, path, dir)) return null;
         var rel = path[dir.len..];
@@ -1016,6 +1123,17 @@ pub const Context = struct {
             text = "";
         } else if (std.mem.eql(u8, text, Config.StatusBar.HLOCK)) {
             text = if (self.lock_horizontal_scroll) " HLOCK " else "";
+        } else if (std.mem.eql(u8, text, Config.StatusBar.CHAPTER)) {
+            text = self.chapterFor(self.document_handler.getCurrentPageNumber());
+        } else if (std.mem.eql(u8, text, Config.StatusBar.PERCENT)) {
+            const total = self.document_handler.getTotalPages();
+            const pct = if (total > 0) (@as(u32, self.document_handler.getCurrentPageNumber()) + 1) * 100 / total else 0;
+            text = try std.fmt.allocPrint(allocator, "{d}", .{pct});
+        } else if (std.mem.eql(u8, text, Config.StatusBar.SEARCH)) {
+            text = if (self.search_hits.items.len > 0)
+                try std.fmt.allocPrint(allocator, " {d}/{d} {s} ", .{ self.search_index + 1, self.search_hits.items.len, self.search_needle })
+            else
+                "";
         }
 
         const width = vaxis.gwidth.gwidth(text, .wcwidth);
@@ -1038,6 +1156,8 @@ pub const Context = struct {
 
         if (self.current_mode == .command) {
             self.current_mode.command.drawCommandBar(win);
+        } else if (self.current_mode == .search) {
+            self.current_mode.search.drawSearchBar(win);
         } else if (self.config.status_bar.enabled) {
             try self.drawStatusBar(win);
         }

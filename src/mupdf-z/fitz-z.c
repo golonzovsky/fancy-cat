@@ -349,6 +349,13 @@ int fz_page_content_bbox_z(fz_context *ctx, fz_page *page, fz_rect *out) {
   return ok;
 }
 
+int fz_search_page_z(fz_context *ctx, fz_document *doc, int page_number, const char *needle, fz_quad *quads, int max_quads) {
+  int count = 0;
+  fz_try(ctx) { count = fz_search_page_number(ctx, doc, page_number, needle, NULL, quads, max_quads); }
+  fz_catch(ctx) { count = 0; }
+  return count;
+}
+
 int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size) {
   int written = 0;
   fz_try(ctx) {

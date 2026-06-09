@@ -74,7 +74,7 @@ fn populate(self: *Self) !void {
         const links = self.context.document_handler.loadLinks(a, p.page_num) catch continue;
         defer a.free(links);
         for (links) |link| {
-            const odd_shift_pix: f32 = if (p.page_num % 2 == 1)
+            const odd_shift_pix: f32 = if (p.page_num % 2 == 1 and !self.context.document_handler.getSpread())
                 @floatFromInt(self.context.document_handler.getOddShiftX())
             else
                 0;

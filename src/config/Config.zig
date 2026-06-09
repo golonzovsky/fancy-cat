@@ -13,6 +13,7 @@ pub const KeyMap = struct {
     zoom_out: vaxis.Key = .{ .codepoint = 'o' },
     width_mode: vaxis.Key = .{ .codepoint = 'w' },
     crop_to_content: vaxis.Key = .{ .codepoint = 't' },
+    toggle_spread: vaxis.Key = .{ .codepoint = 'd' },
     hint_mode: vaxis.Key = .{ .codepoint = ';' },
     set_mark: vaxis.Key = .{ .codepoint = 'm' },
     jump_mark: vaxis.Key = .{ .codepoint = '\'' },
@@ -31,6 +32,9 @@ pub const KeyMap = struct {
     open_in_editor: vaxis.Key = .{ .codepoint = 'e' },
     open_chapter_in_editor: vaxis.Key = .{ .codepoint = 'E' },
     show_help: vaxis.Key = .{ .codepoint = '?' },
+    search: vaxis.Key = .{ .codepoint = '/' },
+    search_next: vaxis.Key = .{ .codepoint = 'N' },
+    search_prev: vaxis.Key = .{ .codepoint = 'P' },
 
     pub fn parse(val: std.json.Value, allocator: std.mem.Allocator) KeyMap {
         var keymap = KeyMap{};
@@ -132,6 +136,9 @@ pub const StatusBar = struct {
     pub const PAGE = "<page>";
     pub const TOTAL_PAGES = "<total_pages>";
     pub const HLOCK = "<hlock>";
+    pub const CHAPTER = "<chapter>";
+    pub const PERCENT = "<percent>";
+    pub const SEARCH = "<search>";
 
     pub const default_items: []const StatusBar.Item = &.{
         .{ .styled = .{ .text = " ", .style = default_style } },
@@ -147,12 +154,17 @@ pub const StatusBar = struct {
             .reload = .{ .text = "*", .style = default_style },
             .watching = .{ .text = " ", .style = default_style },
         } },
+        .{ .styled = .{ .text = " ", .style = default_style } },
+        .{ .styled = .{ .text = CHAPTER, .style = default_style } },
         .{ .styled = .{ .text = SEPARATOR, .style = default_style } },
+        .{ .styled = .{ .text = SEARCH, .style = default_style } },
         .{ .styled = .{ .text = HLOCK, .style = default_style } },
         .{ .styled = .{ .text = PAGE, .style = default_style } },
         .{ .styled = .{ .text = ":", .style = default_style } },
         .{ .styled = .{ .text = TOTAL_PAGES, .style = default_style } },
-        .{ .styled = .{ .text = " ", .style = default_style } },
+        .{ .styled = .{ .text = " · ", .style = default_style } },
+        .{ .styled = .{ .text = PERCENT, .style = default_style } },
+        .{ .styled = .{ .text = "% ", .style = default_style } },
     };
 
     enabled: bool = true,
