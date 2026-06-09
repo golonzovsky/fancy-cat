@@ -47,6 +47,9 @@ pix_scroll_y: i32,
 rendered_w: u32,
 last_viewport_w: u32,
 search_highlights: []const SearchHit,
+// Serializes all mupdf access: fz_context is not thread-safe, and the
+// prerender worker renders pages concurrently with the main thread.
+render_mutex: std.Io.Mutex,
 config: *Config,
 
 pub fn init(
@@ -114,6 +117,7 @@ pub fn init(
         .rendered_w = 0,
         .last_viewport_w = 0,
         .search_highlights = &.{},
+        .render_mutex = .init,
         .config = config,
     };
 }
@@ -121,6 +125,30 @@ pub fn init(
 pub fn deinit(self: *Self) void {
     c.fz_drop_document(self.ctx, self.doc);
     c.fz_drop_context(self.ctx);
+}
+
+fn reloadAttempt(self: *Self) bool {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+
+    if (self.doc) |doc| {
+        c.fz_drop_document(self.ctx, doc);
+        self.doc = null;
+    }
+
+    const doc = c.fz_open_document_z(self.ctx, self.path.ptr) orelse return false;
+    self.doc = doc;
+
+    const page_count = c.fz_count_pages_z(self.ctx, self.doc);
+    if (page_count == 0) return false;
+
+    self.total_pages = @as(u16, @intCast(page_count));
+    if (self.current_page_number >= self.total_pages) {
+        self.current_page_number = self.total_pages - 1;
+    }
+    self.stable_box = null;
+    self.stable_box_done = false;
+    return true;
 }
 
 pub fn reloadDocument(self: *Self) !void {
@@ -134,30 +162,8 @@ pub fn reloadDocument(self: *Self) !void {
             std.debug.print("Failed to reload document\n", .{});
             return types.DocumentError.FailedToOpenDocument;
         }
-
-        if (self.doc) |doc| {
-            c.fz_drop_document(self.ctx, doc);
-            self.doc = null;
-        }
-
-        const doc = c.fz_open_document_z(self.ctx, self.path.ptr) orelse {
-            time.sleep(retry_delay);
-            continue; // try again
-        };
-        self.doc = doc;
-
-        const page_count = c.fz_count_pages_z(self.ctx, self.doc);
-        if (page_count == 0) {
-            time.sleep(retry_delay);
-            continue; // try again
-        }
-        self.total_pages = @as(u16, @intCast(page_count));
-        if (self.current_page_number >= self.total_pages) {
-            self.current_page_number = self.total_pages - 1;
-        }
-        self.stable_box = null;
-        self.stable_box_done = false;
-        return;
+        if (self.reloadAttempt()) return;
+        time.sleep(retry_delay);
     }
 }
 
@@ -324,63 +330,78 @@ pub fn renderPage(
             std.debug.print("Failed to render page\n", .{});
             return types.DocumentError.FailedToRenderPage;
         }
-
-        const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number))) orelse {
-            time.sleep(retry_delay);
-            continue;
-        };
-        defer c.fz_drop_page(self.ctx, page);
-
-        const rb = self.pageRenderBound(page);
-        const render_w_pdf = rb.bound.x1 - rb.bound.x0;
-        const render_h_pdf = rb.bound.y1 - rb.bound.y0;
-
-        self.calculateZoomLevel(window_width, window_height, c.fz_make_rect(0, 0, render_w_pdf, render_h_pdf));
-
-        const full_w = @max(1.0, self.active_zoom * render_w_pdf);
-        const full_h = @max(1.0, self.active_zoom * render_h_pdf);
-
-        const bbox = c.fz_make_irect(0, 0, @intFromFloat(full_w), @intFromFloat(full_h));
-        const pix = c.fz_new_pixmap_with_bbox(self.ctx, c.fz_device_rgb(self.ctx), bbox, null, 0);
-        defer c.fz_drop_pixmap(self.ctx, pix);
-        c.fz_clear_pixmap_with_value(self.ctx, pix, 0xFF);
-
-        const scale = c.fz_scale(self.active_zoom, self.active_zoom);
-        // odd_shift_x is in PDF points; the crop window is fixed in aligned
-        // space and slides over the raw page on odd pages (crop post-offset).
-        const shift_pdf: f32 = if (page_number % 2 == 1)
-            @as(f32, @floatFromInt(self.odd_shift_x))
-        else
-            0;
-        const ctm = c.fz_pre_translate(scale, -rb.ox + shift_pdf, -rb.oy);
-        self.runPageInto(page, ctm, pix);
-        self.highlightHits(pix, page_number, ctm);
-
-        if (self.config.general.colorize) {
-            c.fz_tint_pixmap(self.ctx, pix, self.config.general.black, self.config.general.white);
+        if (self.renderAttempt(page_number, window_width, window_height)) |encoded| {
+            return encoded;
+        } else |err| {
+            if (err != error.PageLoadFailed) return err;
         }
-
-        const width = @as(usize, @intCast(@abs(bbox.x1)));
-        const height = @as(usize, @intCast(@abs(bbox.y1)));
-        const samples = c.fz_pixmap_samples(self.ctx, pix);
-
-        const base64Encoder = fastb64z.standard.Encoder;
-        const sample_count = width * height * 3;
-
-        const b64_buf = try self.allocator.alloc(u8, base64Encoder.calcSize(sample_count));
-        const encoded = base64Encoder.encode(b64_buf, samples[0..sample_count]);
-
-        self.rendered_w = @intCast(width);
-        self.last_viewport_w = window_width;
-
-        return types.EncodedImage{
-            .base64 = encoded,
-            .width = @as(u16, @intCast(width)),
-            .height = @as(u16, @intCast(height)),
-            .origin_x = rb.ox,
-            .origin_y = rb.oy,
-        };
+        time.sleep(retry_delay);
     }
+}
+
+fn renderAttempt(
+    self: *Self,
+    page_number: u16,
+    window_width: u32,
+    window_height: u32,
+) !types.EncodedImage {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+
+    if (self.doc == null or page_number >= self.total_pages) return error.PageLoadFailed;
+    const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number))) orelse
+        return error.PageLoadFailed;
+    defer c.fz_drop_page(self.ctx, page);
+
+    const rb = self.pageRenderBound(page);
+    const render_w_pdf = rb.bound.x1 - rb.bound.x0;
+    const render_h_pdf = rb.bound.y1 - rb.bound.y0;
+
+    self.calculateZoomLevel(window_width, window_height, c.fz_make_rect(0, 0, render_w_pdf, render_h_pdf));
+
+    const full_w = @max(1.0, self.active_zoom * render_w_pdf);
+    const full_h = @max(1.0, self.active_zoom * render_h_pdf);
+
+    const bbox = c.fz_make_irect(0, 0, @intFromFloat(full_w), @intFromFloat(full_h));
+    const pix = c.fz_new_pixmap_with_bbox(self.ctx, c.fz_device_rgb(self.ctx), bbox, null, 0);
+    defer c.fz_drop_pixmap(self.ctx, pix);
+    c.fz_clear_pixmap_with_value(self.ctx, pix, 0xFF);
+
+    const scale = c.fz_scale(self.active_zoom, self.active_zoom);
+    // odd_shift_x is in PDF points; the crop window is fixed in aligned
+    // space and slides over the raw page on odd pages (crop post-offset).
+    const shift_pdf: f32 = if (page_number % 2 == 1)
+        @as(f32, @floatFromInt(self.odd_shift_x))
+    else
+        0;
+    const ctm = c.fz_pre_translate(scale, -rb.ox + shift_pdf, -rb.oy);
+    self.runPageInto(page, ctm, pix);
+    self.highlightHits(pix, page_number, ctm);
+
+    if (self.config.general.colorize) {
+        c.fz_tint_pixmap(self.ctx, pix, self.config.general.black, self.config.general.white);
+    }
+
+    const width = @as(usize, @intCast(@abs(bbox.x1)));
+    const height = @as(usize, @intCast(@abs(bbox.y1)));
+    const samples = c.fz_pixmap_samples(self.ctx, pix);
+
+    const base64Encoder = fastb64z.standard.Encoder;
+    const sample_count = width * height * 3;
+
+    const b64_buf = try self.allocator.alloc(u8, base64Encoder.calcSize(sample_count));
+    const encoded = base64Encoder.encode(b64_buf, samples[0..sample_count]);
+
+    self.rendered_w = @intCast(width);
+    self.last_viewport_w = window_width;
+
+    return types.EncodedImage{
+        .base64 = encoded,
+        .width = @as(u16, @intCast(width)),
+        .height = @as(u16, @intCast(height)),
+        .origin_x = rb.ox,
+        .origin_y = rb.oy,
+    };
 }
 
 pub fn toggleCropToContent(self: *Self) void {
@@ -555,6 +576,9 @@ fn outlineVisitCb(userdata: ?*anyopaque, title: [*c]const u8, depth: c_int, uri:
 }
 
 pub fn loadOutline(self: *Self, allocator: std.mem.Allocator) ![]OutlineEntry {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+
     var out: std.ArrayList(OutlineEntry) = .empty;
     errdefer {
         for (out.items) |e| allocator.free(e.title);
@@ -567,6 +591,9 @@ pub fn loadOutline(self: *Self, allocator: std.mem.Allocator) ![]OutlineEntry {
 }
 
 pub fn loadLinks(self: *Self, allocator: std.mem.Allocator, page_number: u16) ![]PageLink {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+
     var out: std.ArrayList(PageLink) = .empty;
     errdefer {
         for (out.items) |item| switch (item.target) {
@@ -604,6 +631,9 @@ pub fn loadLinks(self: *Self, allocator: std.mem.Allocator, page_number: u16) ![
 }
 
 pub fn getDocumentKey(self: *Self, allocator: std.mem.Allocator) ![]u8 {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+
     var id_buf: [256]u8 = undefined;
     const id_len = c.fz_pdf_id_hex_z(self.ctx, self.doc, &id_buf, id_buf.len);
     if (id_len > 0) {
@@ -630,6 +660,9 @@ pub fn findLinkAtPoint(
     pdf_x: f32,
     pdf_y: f32,
 ) ?LinkTarget {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+
     const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number))) orelse return null;
     defer c.fz_drop_page(self.ctx, page);
 
@@ -728,6 +761,9 @@ pub fn setSearchHighlights(self: *Self, hits: []const SearchHit) void {
 }
 
 pub fn searchPage(self: *Self, allocator: std.mem.Allocator, page_number: u16, needle: [*:0]const u8, out: *std.ArrayList(SearchHit)) !void {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+
     var quads: [128]c.fz_quad = undefined;
     const n = c.fz_search_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number)), needle, &quads, quads.len);
     for (quads[0..@intCast(n)]) |q| {
@@ -774,6 +810,9 @@ pub fn writePagesText(
 
     var md = Markdown.init(self.allocator, &fw.interface);
     defer md.deinit();
+
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
 
     // Image dir = dirname(path).
     const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse 0;

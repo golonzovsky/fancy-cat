@@ -14,6 +14,7 @@ const Cache = @import("./Cache.zig");
 const ReloadIndicatorTimer = @import("services/ReloadIndicatorTimer.zig");
 const History = @import("services/History.zig");
 const Positions = @import("services/Positions.zig");
+const Prerenderer = @import("services/Prerenderer.zig");
 const time = @import("utilities/time.zig");
 
 pub const panic = vaxis.panic_handler;
@@ -24,6 +25,7 @@ pub const Event = union(enum) {
     winsize: vaxis.Winsize,
     file_changed,
     reload_done: usize,
+    prerender_ready,
 };
 
 pub const ModeType = enum { view, command, hint, marks, toc, help, search };
@@ -93,6 +95,7 @@ pub const Context = struct {
     search_hits: std.ArrayList(PdfHandler.SearchHit),
     search_needle: []u8,
     search_index: usize,
+    prerenderer: Prerenderer,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, path: [:0]const u8, initial_page: ?u16) !Self {
         const config = try allocator.create(Config);
@@ -193,6 +196,7 @@ pub const Context = struct {
             .search_hits = .empty,
             .search_needle = &.{},
             .search_index = 0,
+            .prerenderer = Prerenderer.init(),
         };
     }
 
@@ -241,6 +245,7 @@ pub const Context = struct {
 
         self.reload_indicator_timer.deinit();
         self.history.deinit();
+        self.prerenderer.deinit();
         self.cache.deinit();
         self.document_handler.deinit();
         self.vx.deinit(self.allocator, self.tty.writer());
@@ -276,6 +281,12 @@ pub const Context = struct {
         try self.vx.enterAltScreen(self.tty.writer());
         try self.vx.queryTerminal(self.tty.writer(), std.Io.Duration.fromSeconds(1));
         try self.vx.setMouseMode(self.tty.writer(), true);
+
+        self.prerenderer.context = self;
+        if (self.config.cache.enabled) try self.prerenderer.start();
+        // Declared after the loop defers so it runs first: the worker must be
+        // joined while `loop` is still alive (it posts events to it).
+        defer self.prerenderer.stop();
 
         if (self.config.file_monitor.enabled) {
             if (self.watcher) |*w| {
@@ -418,16 +429,12 @@ pub const Context = struct {
             .reload_done => {
                 self.current_reload_indicator_state = .watching;
             },
+            .prerender_ready => self.integratePrerendered(),
         }
     }
 
-    pub fn getPage(
-        self: *Self,
-        page_number: u16,
-        window_width: u32,
-        window_height: u32,
-    ) !Cache.CachedImage {
-        const cache_key = Cache.Key{
+    pub fn cacheKeyFor(self: *Self, page_number: u16) Cache.Key {
+        return .{
             .colorize = self.config.general.colorize,
             .page = page_number,
             .width_mode = self.document_handler.getWidthMode(),
@@ -436,6 +443,15 @@ pub const Context = struct {
             .spread = self.document_handler.getSpread(),
             .shift_x = if (page_number % 2 == 1) self.document_handler.getOddShiftX() else 0,
         };
+    }
+
+    pub fn getPage(
+        self: *Self,
+        page_number: u16,
+        window_width: u32,
+        window_height: u32,
+    ) !Cache.CachedImage {
+        const cache_key = self.cacheKeyFor(page_number);
 
         if (self.config.cache.enabled) {
             if (self.cache.get(cache_key)) |cached| return cached;
@@ -463,6 +479,59 @@ pub const Context = struct {
         };
         if (self.config.cache.enabled) _ = try self.cache.put(cache_key, cached);
         return cached;
+    }
+
+    // Pulls finished background renders in, transmitting them to the terminal
+    // and caching them — unless view parameters changed while they rendered.
+    fn integratePrerendered(self: *Self) void {
+        for (self.prerenderer.claim()) |maybe| {
+            const r = maybe orelse continue;
+            defer {
+                self.allocator.free(r.image.base64);
+                self.allocator.destroy(r);
+            }
+            if (!self.config.cache.enabled) continue;
+            if (!std.meta.eql(r.key, self.cacheKeyFor(r.key.page))) continue;
+            if (self.cache.contains(r.key)) continue;
+            const image = self.vx.transmitPreEncodedImage(
+                self.tty.writer(),
+                r.image.base64,
+                r.image.width,
+                r.image.height,
+                .rgb,
+            ) catch continue;
+            _ = self.cache.put(r.key, .{
+                .image = image,
+                .origin_x = r.image.origin_x,
+                .origin_y = r.image.origin_y,
+            }) catch {};
+        }
+    }
+
+    // Called after the draw walk, so every visible page is already cached;
+    // `next_page` is where the walk stopped. Prefetches one page forward and
+    // one back of what's on screen.
+    fn requestPrerender(self: *Self, top_page: u16, next_page: u16, w: u32, h: u32) void {
+        if (!self.config.cache.enabled) return;
+        if (self.document_handler.getActiveZoom() <= 0) return;
+
+        var targets: [2]?u16 = .{ null, null };
+        var n: usize = 0;
+        const total = self.document_handler.getTotalPages();
+        var fwd: u32 = next_page;
+        while (fwd < @min(@as(u32, next_page) + 2, total)) : (fwd += 1) {
+            if (!self.cache.contains(self.cacheKeyFor(@intCast(fwd)))) {
+                targets[n] = @intCast(fwd);
+                n += 1;
+                break;
+            }
+        }
+        if (top_page > 0 and !self.cache.contains(self.cacheKeyFor(top_page - 1))) {
+            targets[n] = top_page - 1;
+            n += 1;
+        }
+        if (n == 0) return;
+        self.prerenderer.request(targets, w, h);
     }
 
     pub fn drawCurrentPage(self: *Self, win: vaxis.Window) !void {
@@ -617,6 +686,8 @@ pub const Context = struct {
                 }
             }
         }
+
+        self.requestPrerender(page_num, draw_page, render_w_pix, viewport_h_pix);
     }
 
     pub fn handleLeftClick(self: *Self, mouse: vaxis.Mouse) !void {
