@@ -3,6 +3,7 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const Context = @import("../Context.zig").Context;
 const Config = @import("../config/Config.zig");
+const CommandMode = @import("CommandMode.zig");
 
 context: *Context,
 draw_arena: std.heap.ArenaAllocator,
@@ -13,26 +14,14 @@ const Line = struct {
     label: []const u8 = "",
 };
 
-// `:` commands are not configurable, so this list is static.
-const cmd_lines = [_]Line{
-    .{ .header = true, .label = "Commands  (:)" },
-    .{ .keys = ":N", .label = "go to page N" },
-    .{ .keys = ":N%", .label = "zoom to N%" },
-    .{ .keys = ":y+N :y-N", .label = "scroll vertical" },
-    .{ .keys = ":x+N :x-N", .label = "scroll horizontal" },
-    .{ .keys = ":toc", .label = "table of contents" },
-    .{ .keys = ":marks", .label = "marks list" },
-    .{ .keys = ":mark a …", .label = "set mark + note" },
-    .{ .keys = ":delmark a", .label = "delete mark a" },
-    .{ .keys = ":edit", .label = "page in $EDITOR" },
-    .{ .keys = ":edit c", .label = "chapter in $EDITOR" },
-    .{ .keys = ":oddx N", .label = "shift odd pages (pt)" },
-    .{ .keys = ":hlock", .label = "lock horiz scroll" },
-    .{ .keys = ":spread", .label = "2-column spread" },
-    .{ .keys = ":crop TRBL", .label = "trim margins, css" },
-    .{ .keys = ":crop", .label = "reset margin trim" },
-    .{ .keys = ":help", .label = "this help" },
-    .{ .keys = ":q", .label = "quit" },
+// Generated from CommandMode's dispatch table, so the help can't go stale.
+const cmd_lines = blk: {
+    var lines: [CommandMode.commands.len + 1]Line = undefined;
+    lines[0] = .{ .header = true, .label = "Commands  (:)" };
+    for (CommandMode.commands, 0..) |entry, i| {
+        lines[i + 1] = .{ .keys = entry[1], .label = entry[2] };
+    }
+    break :blk lines;
 };
 
 pub fn init(context: *Context) Self {

@@ -113,21 +113,30 @@ pub fn drawCommandBar(self: *Self, win: vaxis.Window) void {
     self.text_input.draw(command_bar.child(.{ .x_off = 1 }));
 }
 
+// Single source of truth for `:` commands: handler, usage, help label.
+// Dispatched in order (first handler returning true wins); HelpMode renders
+// the usage/label columns from this same table.
+pub const commands = .{
+    .{ handleGoToPage, ":N", "go to page N" },
+    .{ handleZoom, ":N%", "zoom to N%" },
+    .{ handleScroll, ":y+N :x-N", "scroll vert / horiz" },
+    .{ handleToc, ":toc", "table of contents" },
+    .{ handleMarks, ":marks", "marks list" },
+    .{ handleMarkComment, ":mark a …", "set mark + note" },
+    .{ handleDelMark, ":delmark a", "delete mark a" },
+    .{ handleEdit, ":edit [c]", "page/chapter in $EDITOR" },
+    .{ handleAltShift, ":oddx N", "shift odd pages (pt)" },
+    .{ handleHLock, ":hlock", "lock horiz scroll" },
+    .{ handleSpread, ":spread", "2-column spread" },
+    .{ handleCrop, ":crop [TRBL]", "trim margins; bare=reset" },
+    .{ handleHelp, ":help", "this help" },
+    .{ handleQuit, ":q", "quit" },
+};
+
 pub fn executeCommand(self: *Self, cmd: []const u8) void {
-    if (self.handleQuit(cmd)) return;
-    if (self.handleHelp(cmd)) return;
-    if (self.handleAltShift(cmd)) return;
-    if (self.handleHLock(cmd)) return;
-    if (self.handleSpread(cmd)) return;
-    if (self.handleCrop(cmd)) return;
-    if (self.handleMarks(cmd)) return;
-    if (self.handleMarkComment(cmd)) return;
-    if (self.handleDelMark(cmd)) return;
-    if (self.handleToc(cmd)) return;
-    if (self.handleEdit(cmd)) return;
-    if (self.handleGoToPage(cmd)) return;
-    if (self.handleZoom(cmd)) return;
-    if (self.handleScroll(cmd)) return;
+    inline for (commands) |entry| {
+        if (entry[0](self, cmd)) return;
+    }
 }
 
 fn handleMarks(self: *Self, cmd: []const u8) bool {

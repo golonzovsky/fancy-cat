@@ -958,27 +958,104 @@ pub const Context = struct {
         self.document_handler.setHighlightQuads(flat.items);
     }
 
+    fn rectsOverlap(a: []const f32, b: []const f32) bool {
+        var i: usize = 0;
+        while (i + 3 < a.len) : (i += 4) {
+            var j: usize = 0;
+            while (j + 3 < b.len) : (j += 4) {
+                if (a[i] < b[j + 2] and b[j] < a[i + 2] and a[i + 1] < b[j + 3] and b[j + 1] < a[i + 3]) return true;
+            }
+        }
+        return false;
+    }
+
     pub fn addHighlightFromSelection(self: *Self) void {
         if (self.selection_hits.items.len == 0) return;
         const page = self.selection_hits.items[0].page;
-        const rects = self.allocator.alloc(f32, self.selection_hits.items.len * 4) catch return;
-        for (self.selection_hits.items, 0..) |q, i| {
-            rects[i * 4] = q.x0;
-            rects[i * 4 + 1] = q.y0;
-            rects[i * 4 + 2] = q.x1;
-            rects[i * 4 + 3] = q.y1;
+
+        var collected: std.ArrayList(f32) = .empty;
+        defer collected.deinit(self.allocator);
+        for (self.selection_hits.items) |q| {
+            collected.appendSlice(self.allocator, &.{ q.x0, q.y0, q.x1, q.y1 }) catch return;
         }
-        const text = self.allocator.dupe(u8, self.selection_text) catch "";
+
+        // Absorb every existing highlight on this page that overlaps the
+        // growing union (re-scanning so chains of overlaps merge too).
+        var merged_any = false;
+        var scan_again = true;
+        while (scan_again) {
+            scan_again = false;
+            var i: usize = 0;
+            while (i < self.highlights.items.len) : (i += 1) {
+                const h = self.highlights.items[i];
+                if (h.page != page or !rectsOverlap(h.rects, collected.items)) continue;
+                collected.appendSlice(self.allocator, h.rects) catch return;
+                if (h.text.len > 0) self.allocator.free(h.text);
+                if (h.rects.len > 0) self.allocator.free(h.rects);
+                _ = self.highlights.orderedRemove(i);
+                merged_any = true;
+                scan_again = true;
+                break;
+            }
+        }
+
+        var text: []const u8 = "";
+        var rects: []f32 = &.{};
+        if (merged_any) {
+            // Re-select from the union's first to last point in reading order:
+            // exact merged text plus clean per-line quads.
+            var first: [2]f32 = .{ collected.items[0], (collected.items[1] + collected.items[3]) / 2 };
+            var last: [2]f32 = .{ collected.items[2], (collected.items[1] + collected.items[3]) / 2 };
+            var i: usize = 4;
+            while (i + 3 < collected.items.len) : (i += 4) {
+                const cy = (collected.items[i + 1] + collected.items[i + 3]) / 2;
+                if (cy < first[1] or (cy == first[1] and collected.items[i] < first[0])) first = .{ collected.items[i], cy };
+                if (cy > last[1] or (cy == last[1] and collected.items[i + 2] > last[0])) last = .{ collected.items[i + 2], cy };
+            }
+            var merged_hits: std.ArrayList(PdfHandler.SearchHit) = .empty;
+            defer merged_hits.deinit(self.allocator);
+            const merged_text = self.document_handler.selectText(
+                self.allocator,
+                page,
+                first[0] + 1,
+                first[1],
+                last[0] - 1,
+                last[1],
+                &merged_hits,
+            ) catch &.{};
+            if (merged_hits.items.len > 0) {
+                rects = self.allocator.alloc(f32, merged_hits.items.len * 4) catch return;
+                for (merged_hits.items, 0..) |q, qi| {
+                    rects[qi * 4] = q.x0;
+                    rects[qi * 4 + 1] = q.y0;
+                    rects[qi * 4 + 2] = q.x1;
+                    rects[qi * 4 + 3] = q.y1;
+                }
+                text = merged_text;
+            } else {
+                // Re-selection failed (e.g. non-text region): keep the raw union.
+                if (merged_text.len > 0) self.allocator.free(merged_text);
+                rects = self.allocator.dupe(f32, collected.items) catch return;
+                text = self.allocator.dupe(u8, self.selection_text) catch "";
+            }
+        } else {
+            rects = self.allocator.dupe(f32, collected.items) catch return;
+            text = self.allocator.dupe(u8, self.selection_text) catch "";
+        }
+
         self.highlights.append(self.allocator, .{ .page = page, .text = text, .rects = rects }) catch {
             self.allocator.free(rects);
-            if (text.len > 0) self.allocator.free(text);
+            if (text.len > 0) self.allocator.free(@constCast(text));
             return;
         };
         self.clearSelection();
         self.rebuildHighlightQuads();
         self.clearCache();
         self.reload_page = true;
-        const msg = std.fmt.bufPrint(&self.progress_buf, " highlighted ({d} total) ", .{self.highlights.items.len}) catch return;
+        const msg = std.fmt.bufPrint(&self.progress_buf, " highlighted ({d} total{s}) ", .{
+            self.highlights.items.len,
+            if (merged_any) ", merged" else "",
+        }) catch return;
         self.progress_text = msg;
     }
 
