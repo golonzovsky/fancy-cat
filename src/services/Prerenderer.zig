@@ -69,7 +69,9 @@ pub fn deinit(self: *Self) void {
 
 fn freeResult(self: *Self, r: *Result) void {
     const a = self.context.allocator;
-    a.free(r.image.base64);
+    // Never transmitted: the terminal won't delete the temp file, so we must.
+    if (r.image.is_path) std.Io.Dir.cwd().deleteFile(self.context.io, r.image.data) catch {};
+    a.free(r.image.data);
     a.destroy(r);
 }
 
@@ -116,7 +118,8 @@ fn run(self: *Self) void {
             const encoded = self.context.document_handler.renderPage(page, w, h) catch continue;
             const key = self.context.cacheKeyFor(page);
             const result = self.context.allocator.create(Result) catch {
-                self.context.allocator.free(encoded.base64);
+                if (encoded.is_path) std.Io.Dir.cwd().deleteFile(self.context.io, encoded.data) catch {};
+                self.context.allocator.free(encoded.data);
                 continue;
             };
             result.* = .{ .key = key, .image = encoded };

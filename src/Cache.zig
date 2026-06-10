@@ -110,6 +110,16 @@ pub fn put(self: *Self, key: Key, image: CachedImage) !?CachedImage {
     return null;
 }
 
+// Removes an entry, returning it so the caller can free its terminal-side image.
+pub fn take(self: *Self, key: Key) ?CachedImage {
+    const node = self.map.get(key) orelse return null;
+    const value = node.value;
+    _ = self.map.remove(key);
+    self.removeNode(node);
+    self.allocator.destroy(node);
+    return value;
+}
+
 fn remove(self: *Self, key: Key) bool {
     const node = self.map.get(key) orelse return false;
     _ = self.map.remove(key);

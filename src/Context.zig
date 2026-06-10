@@ -164,6 +164,14 @@ pub const Context = struct {
 
         const outline = document_handler.loadOutline(allocator) catch &.{};
 
+        // Local terminals get kitty t=t temp-file image transfer (the path
+        // travels over the tty, not the pixels). Over SSH the terminal can't
+        // see our filesystem, so fall back to streaming PNG bytes.
+        if (env.get("SSH_TTY") == null and env.get("SSH_CONNECTION") == null) {
+            const tmp = std.mem.trimEnd(u8, env.get("TMPDIR") orelse "/tmp", "/");
+            document_handler.setPngDir(tmp);
+        }
+
         // The clipboard allocator must be set: without it, vaxis's parser
         // null-unwraps on any OSC 52 sequence the terminal sends back (e.g.
         // Ghostty responding around its clipboard-write confirmation), which
@@ -531,6 +539,11 @@ pub const Context = struct {
 
         if (self.config.cache.enabled) {
             if (self.cache.get(cache_key)) |cached| return cached;
+            // The page may already be prerendered but parked, its ready-event
+            // still queued behind this draw. Pull results in before paying
+            // for a render of our own.
+            self.integratePrerendered();
+            if (self.cache.get(cache_key)) |cached| return cached;
         }
 
         const encoded_image = try self.document_handler.renderPage(
@@ -538,15 +551,12 @@ pub const Context = struct {
             window_width,
             window_height,
         );
-        defer self.allocator.free(encoded_image.base64);
+        defer self.allocator.free(encoded_image.data);
 
-        const image = try self.vx.transmitPreEncodedImage(
-            self.tty.writer(),
-            encoded_image.base64,
-            encoded_image.width,
-            encoded_image.height,
-            .rgb,
-        );
+        const image = self.transmitEncoded(encoded_image) catch |err| {
+            self.deleteEncodedFile(encoded_image);
+            return err;
+        };
 
         const cached = Cache.CachedImage{
             .image = image,
@@ -561,6 +571,34 @@ pub const Context = struct {
         return cached;
     }
 
+    // Sends a render to the terminal. Locally the PNG sits in a temp file and
+    // only its path crosses the tty (kitty t=t; the terminal deletes the file
+    // after reading); the SSH fallback streams the PNG bytes base64-chunked.
+    fn transmitEncoded(self: *Self, enc: PdfHandler.types.EncodedImage) !vaxis.Image {
+        if (enc.is_path) {
+            return self.vx.transmitLocalImagePath(
+                self.allocator,
+                self.tty.writer(),
+                enc.data,
+                enc.width,
+                enc.height,
+                .temp_file,
+                .png,
+            );
+        }
+        const b64 = try self.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(enc.data.len));
+        defer self.allocator.free(b64);
+        const encoded = std.base64.standard.Encoder.encode(b64, enc.data);
+        return self.vx.transmitPreEncodedImage(self.tty.writer(), encoded, enc.width, enc.height, .png);
+    }
+
+    // For renders discarded without being transmitted — the terminal will
+    // never read (and so never delete) their temp file.
+    fn deleteEncodedFile(self: *Self, enc: PdfHandler.types.EncodedImage) void {
+        if (!enc.is_path) return;
+        std.Io.Dir.cwd().deleteFile(self.io, enc.data) catch {};
+    }
+
     // Empties the render cache and queues the displaced terminal-side images
     // for deletion after the next render.
     pub fn clearCache(self: *Self) void {
@@ -573,19 +611,20 @@ pub const Context = struct {
         for (self.prerenderer.claim()) |maybe| {
             const r = maybe orelse continue;
             defer {
-                self.allocator.free(r.image.base64);
+                self.allocator.free(r.image.data);
                 self.allocator.destroy(r);
             }
-            if (!self.config.cache.enabled) continue;
-            if (!std.meta.eql(r.key, self.cacheKeyFor(r.key.page))) continue;
-            if (self.cache.contains(r.key)) continue;
-            const image = self.vx.transmitPreEncodedImage(
-                self.tty.writer(),
-                r.image.base64,
-                r.image.width,
-                r.image.height,
-                .rgb,
-            ) catch continue;
+            if (!self.config.cache.enabled or
+                !std.meta.eql(r.key, self.cacheKeyFor(r.key.page)) or
+                self.cache.contains(r.key))
+            {
+                self.deleteEncodedFile(r.image);
+                continue;
+            }
+            const image = self.transmitEncoded(r.image) catch {
+                self.deleteEncodedFile(r.image);
+                continue;
+            };
             const evicted = self.cache.put(r.key, .{
                 .image = image,
                 .origin_x = r.image.origin_x,
@@ -606,14 +645,13 @@ pub const Context = struct {
         var n: usize = 0;
         const total = self.document_handler.getTotalPages();
         var fwd: u32 = next_page;
-        while (fwd < @min(@as(u32, next_page) + 2, total)) : (fwd += 1) {
+        while (fwd < @min(@as(u32, next_page) + 2, total) and n < 2) : (fwd += 1) {
             if (!self.cache.contains(self.cacheKeyFor(@intCast(fwd)))) {
                 targets[n] = @intCast(fwd);
                 n += 1;
-                break;
             }
         }
-        if (top_page > 0 and !self.cache.contains(self.cacheKeyFor(top_page - 1))) {
+        if (n < 2 and top_page > 0 and !self.cache.contains(self.cacheKeyFor(top_page - 1))) {
             targets[n] = top_page - 1;
             n += 1;
         }
@@ -819,6 +857,15 @@ pub const Context = struct {
         return self.selection_hits.items[0].page;
     }
 
+    // Drops the current selection-generation cache entry. Stale generations
+    // would otherwise squat in the LRU and evict prerendered neighbor pages.
+    fn dropSelectionEntry(self: *Self) void {
+        const sp = self.selectionPage() orelse return;
+        if (self.cache.take(self.cacheKeyFor(sp))) |old| {
+            self.stale_images.append(self.allocator, old) catch {};
+        }
+    }
+
     fn updateSelection(self: *Self, anchor: PagePoint, head: PagePoint) void {
         self.selection_hits.clearRetainingCapacity();
         if (self.selection_text.len > 0) {
@@ -841,6 +888,7 @@ pub const Context = struct {
         const now = time.nowNs();
         if (now - self.selection_render_ns >= 250 * std.time.ns_per_ms) {
             self.selection_render_ns = now;
+            self.dropSelectionEntry();
             self.selection_gen +%= 1;
             self.reload_page = true;
         }
@@ -848,6 +896,7 @@ pub const Context = struct {
 
     pub fn clearSelection(self: *Self) void {
         if (self.selection_hits.items.len == 0 and self.selection_text.len == 0) return;
+        self.dropSelectionEntry();
         self.selection_hits.clearRetainingCapacity();
         if (self.selection_text.len > 0) {
             self.allocator.free(self.selection_text);
@@ -864,6 +913,7 @@ pub const Context = struct {
         w.flush() catch {};
         // The throttle above may have skipped the last drag updates; render
         // the final selection state.
+        self.dropSelectionEntry();
         self.selection_gen +%= 1;
         self.reload_page = true;
         // Shown until the next keypress clears progress_text.

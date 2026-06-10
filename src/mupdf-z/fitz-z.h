@@ -22,6 +22,11 @@ int fz_search_page_z(fz_context *ctx, fz_document *doc, int page_number, const c
 // UTF-8 text of the stext line containing (or nearest to) point (x,y) on the page,
 // written NUL-terminated into out. Returns the byte length (0 if no line nearby).
 int fz_line_text_at_z(fz_context *ctx, fz_document *doc, int page_number, float x, float y, char *out, int out_size);
+// Saves the pixmap as a PNG file at path. Returns 1 on success.
+int fz_save_pixmap_png_z(fz_context *ctx, fz_pixmap *pix, const char *path);
+// PNG-encodes the pixmap into a malloc'd buffer (caller frees with free()).
+// Returns NULL on error; *out_len receives the byte length.
+unsigned char *fz_pixmap_png_z(fz_context *ctx, fz_pixmap *pix, size_t *out_len);
 // Text selection between points a and b, snapped to characters. Fills up to
 // max_quads highlight quads (count in *quad_count) and writes the selected text
 // NUL-terminated into text_out. Returns the text byte length.

@@ -2,7 +2,7 @@ const Self = @This();
 const std = @import("std");
 const fastb64z = @import("fastb64z");
 const Config = @import("../config/Config.zig");
-const types = @import("./types.zig");
+pub const types = @import("./types.zig");
 const Utilities = @import("../utilities/Utilities.zig");
 const Markdown = @import("./Markdown.zig");
 
@@ -48,6 +48,11 @@ rendered_w: u32,
 last_viewport_w: u32,
 search_highlights: []const SearchHit,
 selection_quads: []const SearchHit,
+// When set, renders are written as PNG temp files in this directory (kitty
+// t=t transmission); when null, renders return in-memory PNG bytes.
+png_dir: ?[]const u8,
+png_seq: u32,
+session_tag: u32,
 // Serializes all mupdf access: fz_context is not thread-safe, and the
 // prerender worker renders pages concurrently with the main thread.
 render_mutex: std.Io.Mutex,
@@ -119,12 +124,20 @@ pub fn init(
         .last_viewport_w = 0,
         .search_highlights = &.{},
         .selection_quads = &.{},
+        .png_dir = null,
+        .png_seq = 0,
+        .session_tag = @truncate(@as(u64, @bitCast(time.nowRealSeconds()))),
         .render_mutex = .init,
         .config = config,
     };
 }
 
+pub fn setPngDir(self: *Self, dir: []const u8) void {
+    self.png_dir = self.allocator.dupe(u8, dir) catch null;
+}
+
 pub fn deinit(self: *Self) void {
+    if (self.png_dir) |d| self.allocator.free(d);
     if (self.search_highlights.len > 0) self.allocator.free(self.search_highlights);
     if (self.selection_quads.len > 0) self.allocator.free(self.selection_quads);
     c.fz_drop_document(self.ctx, self.doc);
@@ -393,19 +406,44 @@ fn renderAttempt(
 
     const width = @as(usize, @intCast(@abs(bbox.x1)));
     const height = @as(usize, @intCast(@abs(bbox.y1)));
-    const samples = c.fz_pixmap_samples(self.ctx, pix);
-
-    const base64Encoder = fastb64z.standard.Encoder;
-    const sample_count = width * height * 3;
-
-    const b64_buf = try self.allocator.alloc(u8, base64Encoder.calcSize(sample_count));
-    const encoded = base64Encoder.encode(b64_buf, samples[0..sample_count]);
 
     self.rendered_w = @intCast(width);
     self.last_viewport_w = window_width;
 
+    // PNG instead of raw RGB: pages of text compress 10-40x, which shrinks
+    // both the temp file and the streamed fallback accordingly.
+    if (self.png_dir) |dir| {
+        self.png_seq +%= 1;
+        const path = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}/tty-graphics-protocol-fancycat-{d}-{d}.png",
+            .{ dir, self.session_tag, self.png_seq },
+        );
+        errdefer self.allocator.free(path);
+        var pathz_buf: [1024]u8 = undefined;
+        const pathz = std.fmt.bufPrintZ(&pathz_buf, "{s}", .{path}) catch return types.DocumentError.FailedToRenderPage;
+        if (c.fz_save_pixmap_png_z(self.ctx, pix, pathz.ptr) == 0) {
+            return types.DocumentError.FailedToRenderPage;
+        }
+        return types.EncodedImage{
+            .data = path,
+            .is_path = true,
+            .width = @as(u16, @intCast(width)),
+            .height = @as(u16, @intCast(height)),
+            .origin_x = rb.ox,
+            .origin_y = rb.oy,
+        };
+    }
+
+    var png_len: usize = 0;
+    const png_ptr = c.fz_pixmap_png_z(self.ctx, pix, &png_len) orelse
+        return types.DocumentError.FailedToRenderPage;
+    defer std.c.free(png_ptr);
+    const data = try self.allocator.dupe(u8, png_ptr[0..png_len]);
+
     return types.EncodedImage{
-        .base64 = encoded,
+        .data = data,
+        .is_path = false,
         .width = @as(u16, @intCast(width)),
         .height = @as(u16, @intCast(height)),
         .origin_x = rb.ox,

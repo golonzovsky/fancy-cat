@@ -1,5 +1,6 @@
 #include "fitz-z.h"
 #include "mupdf/pdf.h"
+#include <stdlib.h>
 #include <string.h>
 
 fz_document *fz_open_document_z(fz_context *ctx, const char *filename) {
@@ -484,6 +485,43 @@ int fz_selection_z(fz_context *ctx, fz_document *doc, int page_number,
     *quad_count = 0;
   }
   return written;
+}
+
+int fz_save_pixmap_png_z(fz_context *ctx, fz_pixmap *pix, const char *path) {
+  int ok = 0;
+  fz_try(ctx) {
+    fz_save_pixmap_as_png(ctx, pix, path);
+    ok = 1;
+  }
+  fz_catch(ctx) { ok = 0; }
+  return ok;
+}
+
+unsigned char *fz_pixmap_png_z(fz_context *ctx, fz_pixmap *pix, size_t *out_len) {
+  fz_buffer *buf = NULL;
+  unsigned char *out = NULL;
+  *out_len = 0;
+  fz_try(ctx) {
+    buf = fz_new_buffer_from_pixmap_as_png(ctx, pix, fz_default_color_params);
+    unsigned char *data;
+    size_t len = fz_buffer_storage(ctx, buf, &data);
+    out = malloc(len);
+    if (out) {
+      memcpy(out, data, len);
+      *out_len = len;
+    }
+  }
+  fz_always(ctx) {
+    if (buf) fz_drop_buffer(ctx, buf);
+  }
+  fz_catch(ctx) {
+    if (out) {
+      free(out);
+      out = NULL;
+    }
+    *out_len = 0;
+  }
+  return out;
 }
 
 int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size) {
