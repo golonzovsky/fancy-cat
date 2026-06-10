@@ -29,6 +29,13 @@ pub const Mark = struct {
     comment: []const u8 = "",
 };
 
+pub const Highlight = struct {
+    page: u16 = 0,
+    text: []const u8 = "",
+    // x0,y0,x1,y1 groups in raw page coordinates, one per selection quad.
+    rects: []const f32 = &.{},
+};
+
 allocator: std.mem.Allocator,
 io: std.Io,
 config: *Config,
@@ -203,7 +210,48 @@ pub fn loadMarks(self: *Self, allocator: std.mem.Allocator) std.ArrayList(Mark) 
     return out;
 }
 
-pub fn save(self: *Self, pos: Position, marks: []const Mark) void {
+pub fn loadHighlights(self: *Self, allocator: std.mem.Allocator) std.ArrayList(Highlight) {
+    var out: std.ArrayList(Highlight) = .empty;
+    if (!self.have_data) return out;
+    const entry = self.all.value.object.get(self.doc_path) orelse return out;
+    if (entry != .object) return out;
+    const arr = entry.object.get("highlights") orelse return out;
+    if (arr != .array) return out;
+    for (arr.array.items) |item| {
+        if (item != .object) continue;
+        const rects_v = item.object.get("rects") orelse continue;
+        if (rects_v != .array) continue;
+        const n = rects_v.array.items.len - (rects_v.array.items.len % 4);
+        if (n == 0) continue;
+        const rects = allocator.alloc(f32, n) catch break;
+        var ok = true;
+        for (rects_v.array.items[0..n], 0..) |rv, i| {
+            rects[i] = switch (rv) {
+                .float => |f| @floatCast(f),
+                .integer => |iv| @floatFromInt(iv),
+                else => blk: {
+                    ok = false;
+                    break :blk 0;
+                },
+            };
+        }
+        if (!ok) {
+            allocator.free(rects);
+            continue;
+        }
+        out.append(allocator, .{
+            .page = jsonGet(u16, item.object, "page", 0),
+            .text = allocator.dupe(u8, jsonGet([]const u8, item.object, "text", "")) catch "",
+            .rects = rects,
+        }) catch {
+            allocator.free(rects);
+            break;
+        };
+    }
+    return out;
+}
+
+pub fn save(self: *Self, pos: Position, marks: []const Mark, highlights: []const Highlight) void {
     if (self.file_path.len == 0) return;
 
     const cwd = std.Io.Dir.cwd();
@@ -241,6 +289,20 @@ pub fn save(self: *Self, pos: Position, marks: []const Mark) void {
             arr.append(.{ .object = obj }) catch return;
         }
         entry.put(a, "marks", .{ .array = arr }) catch return;
+    }
+
+    if (highlights.len > 0) {
+        var harr = std.json.Array.init(a);
+        for (highlights) |h| {
+            var obj = std.json.ObjectMap.empty;
+            obj.put(a, "page", .{ .integer = @as(i64, h.page) }) catch return;
+            obj.put(a, "text", .{ .string = h.text }) catch return;
+            var rarr = std.json.Array.init(a);
+            for (h.rects) |v| rarr.append(.{ .float = v }) catch return;
+            obj.put(a, "rects", .{ .array = rarr }) catch return;
+            harr.append(.{ .object = obj }) catch return;
+        }
+        entry.put(a, "highlights", .{ .array = harr }) catch return;
     }
 
     root.put(a, self.doc_path, .{ .object = entry }) catch return;

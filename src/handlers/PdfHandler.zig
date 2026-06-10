@@ -48,6 +48,7 @@ rendered_w: u32,
 last_viewport_w: u32,
 search_highlights: []const SearchHit,
 selection_quads: []const SearchHit,
+highlight_quads: []const SearchHit,
 // When set, renders are written as PNG temp files in this directory (kitty
 // t=t transmission); when null, renders return in-memory PNG bytes.
 png_dir: ?[]const u8,
@@ -124,6 +125,7 @@ pub fn init(
         .last_viewport_w = 0,
         .search_highlights = &.{},
         .selection_quads = &.{},
+        .highlight_quads = &.{},
         .png_dir = null,
         .png_seq = 0,
         .session_tag = @truncate(@as(u64, @bitCast(time.nowRealSeconds()))),
@@ -140,6 +142,7 @@ pub fn deinit(self: *Self) void {
     if (self.png_dir) |d| self.allocator.free(d);
     if (self.search_highlights.len > 0) self.allocator.free(self.search_highlights);
     if (self.selection_quads.len > 0) self.allocator.free(self.selection_quads);
+    if (self.highlight_quads.len > 0) self.allocator.free(self.highlight_quads);
     c.fz_drop_document(self.ctx, self.doc);
     c.fz_drop_context(self.ctx);
 }
@@ -336,6 +339,39 @@ fn highlightHits(self: *Self, pix: [*c]c.fz_pixmap, page_num: u16, ctm: c.fz_mat
     self.invertRects(pix, page_num, ctm, self.selection_quads);
 }
 
+// Blends pixels toward marker yellow. Runs after colorize, so it reads the
+// final page colors and works for both normal and inverted modes.
+fn tintRects(self: *Self, pix: [*c]c.fz_pixmap, page_num: u16, ctm: c.fz_matrix, hits: []const SearchHit) void {
+    if (hits.len == 0) return;
+    const w: i32 = c.fz_pixmap_width(self.ctx, pix);
+    const h: i32 = c.fz_pixmap_height(self.ctx, pix);
+    if (w <= 0 or h <= 0) return;
+    const samples = c.fz_pixmap_samples(self.ctx, pix);
+    const stride: usize = @intCast(w * 3);
+    const target = [3]i32{ 255, 220, 80 };
+    for (hits) |hit| {
+        if (hit.page != page_num) continue;
+        const r = c.fz_transform_rect(c.fz_make_rect(hit.x0, hit.y0, hit.x1, hit.y1), ctm);
+        const ir = c.fz_irect_from_rect(r);
+        const x0: usize = @intCast(std.math.clamp(ir.x0, 0, w));
+        const x1: usize = @intCast(std.math.clamp(ir.x1, 0, w));
+        const y0: usize = @intCast(std.math.clamp(ir.y0, 0, h));
+        const y1: usize = @intCast(std.math.clamp(ir.y1, 0, h));
+        var y = y0;
+        while (y < y1) : (y += 1) {
+            var p = samples + y * stride + x0 * 3;
+            var x = x0;
+            while (x < x1) : (x += 1) {
+                inline for (0..3) |i| {
+                    const old: i32 = p[i];
+                    p[i] = @intCast(old + ((target[i] - old) * 77 >> 8));
+                }
+                p += 3;
+            }
+        }
+    }
+}
+
 pub fn renderPage(
     self: *Self,
     page_number: u16,
@@ -403,6 +439,7 @@ fn renderAttempt(
     if (self.config.general.colorize) {
         c.fz_tint_pixmap(self.ctx, pix, self.config.general.black, self.config.general.white);
     }
+    self.tintRects(pix, page_number, ctm, self.highlight_quads);
 
     const width = @as(usize, @intCast(@abs(bbox.x1)));
     const height = @as(usize, @intCast(@abs(bbox.y1)));
@@ -830,6 +867,13 @@ pub fn setSelectionQuads(self: *Self, hits: []const SearchHit) void {
     defer self.render_mutex.unlock(self.io);
     if (self.selection_quads.len > 0) self.allocator.free(self.selection_quads);
     self.selection_quads = self.allocator.dupe(SearchHit, hits) catch &.{};
+}
+
+pub fn setHighlightQuads(self: *Self, hits: []const SearchHit) void {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+    if (self.highlight_quads.len > 0) self.allocator.free(self.highlight_quads);
+    self.highlight_quads = self.allocator.dupe(SearchHit, hits) catch &.{};
 }
 
 // Snaps (a, b) to characters, fills `out` with the selection's highlight quads,

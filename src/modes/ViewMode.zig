@@ -41,6 +41,8 @@ const bindings = .{
     .{ "search_next", Context.searchNext },
     .{ "search_prev", Context.searchPrev },
     .{ "search_list", enterSearchList },
+    .{ "add_highlight", Context.addHighlightFromSelection },
+    .{ "highlights_mode", enterHighlights },
     .{ "exit_command_mode", Context.escapeClear },
 };
 
@@ -151,6 +153,10 @@ fn enterSearch(ctx: *Context) void {
 
 fn enterSearchList(ctx: *Context) void {
     ctx.changeMode(.search_list);
+}
+
+fn enterHighlights(ctx: *Context) void {
+    ctx.changeMode(.highlights);
 }
 
 fn startSetMark(ctx: *Context) void {

@@ -8,6 +8,7 @@ const TocMode = @import("modes/TocMode.zig");
 const HelpMode = @import("modes/HelpMode.zig");
 const SearchMode = @import("modes/SearchMode.zig");
 const SearchListMode = @import("modes/SearchListMode.zig");
+const HighlightsMode = @import("modes/HighlightsMode.zig");
 const fzwatch = @import("fzwatch");
 const Config = @import("config/Config.zig");
 const PdfHandler = @import("handlers/PdfHandler.zig");
@@ -27,8 +28,8 @@ pub const Event = union(enum) {
     prerender_ready,
 };
 
-pub const ModeType = enum { view, command, hint, marks, toc, help, search, search_list };
-pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode, toc: TocMode, help: HelpMode, search: SearchMode, search_list: SearchListMode };
+pub const ModeType = enum { view, command, hint, marks, toc, help, search, search_list, highlights };
+pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode, toc: TocMode, help: HelpMode, search: SearchMode, search_list: SearchListMode, highlights: HighlightsMode };
 pub const ReloadIndicatorState = enum { idle, reload, watching };
 
 pub const VisiblePage = struct {
@@ -94,6 +95,7 @@ pub const Context = struct {
     jump_forward: std.ArrayList(JumpPosition),
     lock_horizontal_scroll: bool,
     marks: std.ArrayList(Positions.Mark),
+    highlights: std.ArrayList(Positions.Highlight),
     pending_op: ?enum { set_mark, jump_mark },
     progress_text: ?[]const u8,
     progress_buf: [128]u8,
@@ -155,6 +157,19 @@ pub const Context = struct {
         const restored_hlock: bool = if (positions.getSavedPosition()) |p| p.hlock else false;
         var marks = positions.loadMarks(allocator);
         errdefer marks.deinit(allocator);
+        var highlights = positions.loadHighlights(allocator);
+        errdefer highlights.deinit(allocator);
+        {
+            var flat: std.ArrayList(PdfHandler.SearchHit) = .empty;
+            defer flat.deinit(allocator);
+            for (highlights.items) |h| {
+                var i: usize = 0;
+                while (i + 3 < h.rects.len) : (i += 4) {
+                    flat.append(allocator, .{ .page = h.page, .x0 = h.rects[i], .y0 = h.rects[i + 1], .x1 = h.rects[i + 2], .y1 = h.rects[i + 3] }) catch break;
+                }
+            }
+            document_handler.setHighlightQuads(flat.items);
+        }
 
         var watcher: ?fzwatch.Watcher = null;
         if (config.file_monitor.enabled) {
@@ -218,6 +233,7 @@ pub const Context = struct {
             .jump_forward = .empty,
             .lock_horizontal_scroll = restored_hlock,
             .marks = marks,
+            .highlights = highlights,
             .pending_op = null,
             .progress_text = null,
             .progress_buf = undefined,
@@ -252,7 +268,7 @@ pub const Context = struct {
             .crop_bottom = self.document_handler.crop_bottom,
             .path = self.doc_abs_path,
             .last_opened = time.nowRealSeconds(),
-        }, self.marks.items);
+        }, self.marks.items, self.highlights.items);
     }
 
     pub fn deinit(self: *Self) void {
@@ -261,6 +277,11 @@ pub const Context = struct {
             if (m.comment.len > 0) self.allocator.free(m.comment);
         }
         self.marks.deinit(self.allocator);
+        for (self.highlights.items) |h| {
+            if (h.text.len > 0) self.allocator.free(h.text);
+            if (h.rects.len > 0) self.allocator.free(h.rects);
+        }
+        self.highlights.deinit(self.allocator);
         self.positions.deinit();
         self.freeOutline();
         self.search_hits.deinit(self.allocator);
@@ -424,6 +445,10 @@ pub const Context = struct {
                 }
                 if (self.current_mode == .search_list) {
                     self.current_mode.search_list.handleMouse(mouse);
+                    return;
+                }
+                if (self.current_mode == .highlights) {
+                    self.current_mode.highlights.handleMouse(mouse);
                     return;
                 }
                 if (self.current_mode == .view) {
@@ -683,7 +708,7 @@ pub const Context = struct {
         const render_cells: u16 = if (columns > 1) col_cells -| 2 else win.width;
         const render_w_pix: u32 = @as(u32, render_cells) * @as(u32, pix_per_col);
 
-        if (self.current_mode == .marks or self.current_mode == .toc or self.current_mode == .help or self.current_mode == .search_list) return;
+        if (self.current_mode == .marks or self.current_mode == .toc or self.current_mode == .help or self.current_mode == .search_list or self.current_mode == .highlights) return;
 
         var page_num = self.document_handler.getCurrentPageNumber();
         const total_pages = self.document_handler.getTotalPages();
@@ -919,6 +944,62 @@ pub const Context = struct {
         // Shown until the next keypress clears progress_text.
         const msg = std.fmt.bufPrint(&self.progress_buf, " copied {d} chars ", .{self.selection_text.len}) catch return;
         self.progress_text = msg;
+    }
+
+    fn rebuildHighlightQuads(self: *Self) void {
+        var flat: std.ArrayList(PdfHandler.SearchHit) = .empty;
+        defer flat.deinit(self.allocator);
+        for (self.highlights.items) |h| {
+            var i: usize = 0;
+            while (i + 3 < h.rects.len) : (i += 4) {
+                flat.append(self.allocator, .{ .page = h.page, .x0 = h.rects[i], .y0 = h.rects[i + 1], .x1 = h.rects[i + 2], .y1 = h.rects[i + 3] }) catch break;
+            }
+        }
+        self.document_handler.setHighlightQuads(flat.items);
+    }
+
+    pub fn addHighlightFromSelection(self: *Self) void {
+        if (self.selection_hits.items.len == 0) return;
+        const page = self.selection_hits.items[0].page;
+        const rects = self.allocator.alloc(f32, self.selection_hits.items.len * 4) catch return;
+        for (self.selection_hits.items, 0..) |q, i| {
+            rects[i * 4] = q.x0;
+            rects[i * 4 + 1] = q.y0;
+            rects[i * 4 + 2] = q.x1;
+            rects[i * 4 + 3] = q.y1;
+        }
+        const text = self.allocator.dupe(u8, self.selection_text) catch "";
+        self.highlights.append(self.allocator, .{ .page = page, .text = text, .rects = rects }) catch {
+            self.allocator.free(rects);
+            if (text.len > 0) self.allocator.free(text);
+            return;
+        };
+        self.clearSelection();
+        self.rebuildHighlightQuads();
+        self.clearCache();
+        self.reload_page = true;
+        const msg = std.fmt.bufPrint(&self.progress_buf, " highlighted ({d} total) ", .{self.highlights.items.len}) catch return;
+        self.progress_text = msg;
+    }
+
+    pub fn deleteHighlight(self: *Self, idx: usize) void {
+        if (idx >= self.highlights.items.len) return;
+        const h = self.highlights.orderedRemove(idx);
+        if (h.text.len > 0) self.allocator.free(h.text);
+        if (h.rects.len > 0) self.allocator.free(h.rects);
+        self.rebuildHighlightQuads();
+        self.clearCache();
+        self.reload_page = true;
+    }
+
+    pub fn jumpToHighlight(self: *Self, idx: usize) void {
+        if (idx >= self.highlights.items.len) return;
+        const h = self.highlights.items[idx];
+        self.pushJump();
+        self.document_handler.setCurrentPage(h.page);
+        self.document_handler.setScrollY(0);
+        if (h.rects.len >= 2) self.document_handler.setPendingScrollPdfY(h.rects[1]);
+        self.resetCurrentPage();
     }
 
     // Esc in view mode: drop the selection first; a second Esc clears search.
@@ -1501,6 +1582,7 @@ pub const Context = struct {
         if (self.current_mode == .toc) self.current_mode.toc.draw(win);
         if (self.current_mode == .help) self.current_mode.help.draw(win);
         if (self.current_mode == .search_list) self.current_mode.search_list.draw(win);
+        if (self.current_mode == .highlights) self.current_mode.highlights.draw(win);
     }
 
     pub fn toggleFullScreen(self: *Self) void {

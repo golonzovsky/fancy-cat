@@ -126,6 +126,10 @@ fn buildKeyLines(self: *Self, a: std.mem.Allocator) []const Line {
     add(a, &lines, .{ .keys = "click", .label = "follow link" });
     add(a, &lines, .{ .keys = "wheel", .label = "scroll, C-: zoom" });
 
+    add(a, &lines, .{ .header = true, .label = "Highlights" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.add_highlight), .label = "highlight selection" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.highlights_mode), .label = "highlights list" });
+
     add(a, &lines, .{ .header = true, .label = "Marks & contents" });
     add(a, &lines, .{ .keys = fmtKey(a, km.set_mark), .label = "set mark (a-z)" });
     add(a, &lines, .{ .keys = fmtKey(a, km.jump_mark), .label = "jump to mark (a-z)" });
