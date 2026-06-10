@@ -221,7 +221,7 @@ fn handleCrop(self: *Self, cmd: []const u8) bool {
         else => unreachable,
     };
     self.context.document_handler.setMarginCrop(trbl[3], trbl[1], trbl[0], trbl[2]);
-    self.context.cache.clear();
+    self.context.clearCache();
     self.context.resetCurrentPage();
     return true;
 }

@@ -7,6 +7,7 @@ const MarksMode = @import("modes/MarksMode.zig");
 const TocMode = @import("modes/TocMode.zig");
 const HelpMode = @import("modes/HelpMode.zig");
 const SearchMode = @import("modes/SearchMode.zig");
+const SearchListMode = @import("modes/SearchListMode.zig");
 const fzwatch = @import("fzwatch");
 const Config = @import("config/Config.zig");
 const PdfHandler = @import("handlers/PdfHandler.zig");
@@ -28,8 +29,8 @@ pub const Event = union(enum) {
     prerender_ready,
 };
 
-pub const ModeType = enum { view, command, hint, marks, toc, help, search };
-pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode, toc: TocMode, help: HelpMode, search: SearchMode };
+pub const ModeType = enum { view, command, hint, marks, toc, help, search, search_list };
+pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode, toc: TocMode, help: HelpMode, search: SearchMode, search_list: SearchListMode };
 pub const ReloadIndicatorState = enum { idle, reload, watching };
 
 pub const VisiblePage = struct {
@@ -48,6 +49,12 @@ pub const JumpPosition = struct {
     page: u16,
     scroll_y: i32,
     scroll_x: i32,
+};
+
+pub const PagePoint = struct {
+    page: u16,
+    x: f32,
+    y: f32,
 };
 
 const max_jumps: usize = 100;
@@ -96,6 +103,15 @@ pub const Context = struct {
     search_needle: []u8,
     search_index: usize,
     prerenderer: Prerenderer,
+    selection_anchor: ?PagePoint,
+    selection_dragged: bool,
+    selection_hits: std.ArrayList(PdfHandler.SearchHit),
+    selection_text: []u8,
+    selection_gen: u32,
+    selection_render_ns: i64,
+    // Images displaced from the cache; deleted terminal-side after the next
+    // render (deleting before would blank their placements for a frame).
+    stale_images: std.ArrayList(Cache.CachedImage),
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, path: [:0]const u8, initial_page: ?u16) !Self {
         const config = try allocator.create(Config);
@@ -114,28 +130,29 @@ pub const Context = struct {
 
         var positions = Positions.init(allocator, io, env, config, doc_key);
         errdefer positions.deinit();
-        if (initial_page == null) {
-            if (positions.getSavedPositionForKey(document_handler.getPath())) |pos| {
-                if (pos.page < document_handler.getTotalPages()) {
-                    document_handler.setCurrentPage(pos.page);
-                    config.general.colorize = pos.colorize;
-                    // Crop/spread first: their toggles reset zoom/scroll, so they must
-                    // run before we restore them or they wipe the restored values.
-                    if (pos.crop != document_handler.getCropToContent()) {
-                        document_handler.toggleCropToContent();
-                    }
-                    if (pos.spread != document_handler.getSpread()) {
-                        document_handler.toggleSpread();
-                    }
-                    if (pos.crop_left != 0 or pos.crop_right != 0 or pos.crop_top != 0 or pos.crop_bottom != 0) {
-                        document_handler.setMarginCrop(pos.crop_left, pos.crop_right, pos.crop_top, pos.crop_bottom);
-                    }
-                    document_handler.setScrollX(pos.scroll_x);
-                    document_handler.setScrollY(pos.scroll_y);
-                    if (pos.zoom > 0) document_handler.setActiveZoom(pos.zoom);
-                    document_handler.setOddShiftX(pos.odd_shift_x);
-                }
+        // An explicit page argument overrides only the position; view settings
+        // (zoom/crop/spread/...) are always restored, otherwise the next
+        // auto-save would overwrite them with defaults.
+        if (positions.getSavedPositionForKey(document_handler.getPath())) |pos| {
+            config.general.colorize = pos.colorize;
+            // Crop/spread first: their toggles reset zoom/scroll, so they must
+            // run before we restore them or they wipe the restored values.
+            if (pos.crop != document_handler.getCropToContent()) {
+                document_handler.toggleCropToContent();
             }
+            if (pos.spread != document_handler.getSpread()) {
+                document_handler.toggleSpread();
+            }
+            if (pos.crop_left != 0 or pos.crop_right != 0 or pos.crop_top != 0 or pos.crop_bottom != 0) {
+                document_handler.setMarginCrop(pos.crop_left, pos.crop_right, pos.crop_top, pos.crop_bottom);
+            }
+            if (initial_page == null and pos.page < document_handler.getTotalPages()) {
+                document_handler.setCurrentPage(pos.page);
+                document_handler.setScrollX(pos.scroll_x);
+                document_handler.setScrollY(pos.scroll_y);
+            }
+            if (pos.zoom > 0) document_handler.setActiveZoom(pos.zoom);
+            document_handler.setOddShiftX(pos.odd_shift_x);
         }
         const restored_hlock: bool = if (positions.getSavedPosition()) |p| p.hlock else false;
         var marks = positions.loadMarks(allocator);
@@ -197,6 +214,13 @@ pub const Context = struct {
             .search_needle = &.{},
             .search_index = 0,
             .prerenderer = Prerenderer.init(),
+            .selection_anchor = null,
+            .selection_dragged = false,
+            .selection_hits = .empty,
+            .selection_text = &.{},
+            .selection_gen = 0,
+            .selection_render_ns = 0,
+            .stale_images = .empty,
         };
     }
 
@@ -230,6 +254,9 @@ pub const Context = struct {
         self.freeOutline();
         self.search_hits.deinit(self.allocator);
         if (self.search_needle.len > 0) self.allocator.free(self.search_needle);
+        self.selection_hits.deinit(self.allocator);
+        if (self.selection_text.len > 0) self.allocator.free(self.selection_text);
+        self.stale_images.deinit(self.allocator);
         self.allocator.free(self.doc_key);
         self.allocator.free(self.doc_abs_path);
         self.jump_back.deinit(self.allocator);
@@ -320,6 +347,14 @@ pub const Context = struct {
             try self.vx.render(buffered);
             try buffered.flush();
 
+            // The new frame no longer places these; delete them terminal-side
+            // so big renders don't accumulate in the terminal's image store.
+            if (self.stale_images.items.len > 0) {
+                for (self.stale_images.items) |img| self.vx.freeImage(buffered, img.image.id);
+                try buffered.flush();
+                self.stale_images.clearRetainingCapacity();
+            }
+
             // Persist position/zoom after any state-changing batch — draw() above
             // has already finalized active_zoom — so it survives a non-clean exit
             // (terminal closed, killed) without waiting for deinit on quit.
@@ -363,7 +398,10 @@ pub const Context = struct {
 
     pub fn update(self: *Self, event: Event) !void {
         switch (event) {
-            .key_press => |key| try self.handleKeyStroke(key),
+            .key_press => |key| {
+                self.progress_text = null;
+                try self.handleKeyStroke(key);
+            },
             .mouse => |mouse| {
                 if (self.current_mode == .toc) {
                     self.current_mode.toc.handleMouse(mouse);
@@ -373,38 +411,72 @@ pub const Context = struct {
                     self.current_mode.marks.handleMouse(mouse);
                     return;
                 }
-                if (self.current_mode == .view and mouse.type == .press) {
-                    const step = self.config.general.scroll_step / 4.0;
-                    const zoom_mod = mouse.mods.ctrl or mouse.mods.alt;
-                    switch (mouse.button) {
-                        .wheel_up => {
-                            if (zoom_mod) {
-                                self.document_handler.zoomIn();
-                                self.reload_page = true;
-                            } else if (mouse.mods.shift) {
-                                self.document_handler.offsetScroll(step, 0);
-                            } else {
-                                self.document_handler.scrollY(step);
+                if (self.current_mode == .search_list) {
+                    self.current_mode.search_list.handleMouse(mouse);
+                    return;
+                }
+                if (self.current_mode == .view) {
+                    switch (mouse.type) {
+                        .press => {
+                            const step = self.config.general.scroll_step / 4.0;
+                            const zoom_mod = mouse.mods.ctrl or mouse.mods.alt;
+                            switch (mouse.button) {
+                                .wheel_up => {
+                                    if (zoom_mod) {
+                                        self.document_handler.zoomIn();
+                                        self.reload_page = true;
+                                    } else if (mouse.mods.shift) {
+                                        self.document_handler.offsetScroll(step, 0);
+                                    } else {
+                                        self.document_handler.scrollY(step);
+                                    }
+                                },
+                                .wheel_down => {
+                                    if (zoom_mod) {
+                                        self.document_handler.zoomOut();
+                                        self.reload_page = true;
+                                    } else if (mouse.mods.shift) {
+                                        self.document_handler.offsetScroll(-step, 0);
+                                    } else {
+                                        self.document_handler.scrollY(-step);
+                                    }
+                                },
+                                .wheel_left => {
+                                    if (!self.lock_horizontal_scroll) self.document_handler.offsetScroll(step, 0);
+                                },
+                                .wheel_right => {
+                                    if (!self.lock_horizontal_scroll) self.document_handler.offsetScroll(-step, 0);
+                                },
+                                .left => {
+                                    self.clearSelection();
+                                    self.selection_anchor = self.pdfPointAt(mouse);
+                                    self.selection_dragged = false;
+                                },
+                                else => {},
                             }
                         },
-                        .wheel_down => {
-                            if (zoom_mod) {
-                                self.document_handler.zoomOut();
-                                self.reload_page = true;
-                            } else if (mouse.mods.shift) {
-                                self.document_handler.offsetScroll(-step, 0);
-                            } else {
-                                self.document_handler.scrollY(-step);
+                        .drag => {
+                            if (mouse.button == .left) {
+                                if (self.selection_anchor) |anchor| {
+                                    if (self.pdfPointAt(mouse)) |head| {
+                                        if (head.page == anchor.page) {
+                                            self.selection_dragged = true;
+                                            self.updateSelection(anchor, head);
+                                        }
+                                    }
+                                }
                             }
                         },
-                        .wheel_left => {
-                            if (!self.lock_horizontal_scroll) self.document_handler.offsetScroll(step, 0);
-                        },
-                        .wheel_right => {
-                            if (!self.lock_horizontal_scroll) self.document_handler.offsetScroll(-step, 0);
-                        },
-                        .left => {
-                            try self.handleLeftClick(mouse);
+                        .release => {
+                            if (mouse.button == .left) {
+                                if (self.selection_dragged and self.selection_hits.items.len > 0) {
+                                    self.finishSelection();
+                                } else {
+                                    try self.handleLeftClick(mouse);
+                                }
+                                self.selection_anchor = null;
+                                self.selection_dragged = false;
+                            }
                         },
                         else => {},
                     }
@@ -412,14 +484,14 @@ pub const Context = struct {
             },
             .winsize => |ws| {
                 try self.vx.resize(self.allocator, self.tty.writer(), ws);
-                self.cache.clear();
+                self.clearCache();
                 self.reload_page = true;
             },
             .file_changed => {
                 try self.document_handler.reloadDocument();
                 self.freeOutline();
                 self.outline = self.document_handler.loadOutline(self.allocator) catch &.{};
-                self.cache.clear();
+                self.clearCache();
                 self.reload_page = true;
                 if (self.reload_indicator_active) {
                     self.current_reload_indicator_state = .reload;
@@ -442,6 +514,7 @@ pub const Context = struct {
             .crop = self.document_handler.getCropToContent(),
             .spread = self.document_handler.getSpread(),
             .shift_x = if (page_number % 2 == 1) self.document_handler.getOddShiftX() else 0,
+            .sel = if (self.selectionPage()) |sp| (if (sp == page_number) self.selection_gen else 0) else 0,
         };
     }
 
@@ -477,8 +550,18 @@ pub const Context = struct {
             .origin_x = encoded_image.origin_x,
             .origin_y = encoded_image.origin_y,
         };
-        if (self.config.cache.enabled) _ = try self.cache.put(cache_key, cached);
+        if (self.config.cache.enabled) {
+            if (try self.cache.put(cache_key, cached)) |evicted| {
+                self.stale_images.append(self.allocator, evicted) catch {};
+            }
+        }
         return cached;
+    }
+
+    // Empties the render cache and queues the displaced terminal-side images
+    // for deletion after the next render.
+    pub fn clearCache(self: *Self) void {
+        self.cache.clearInto(self.allocator, &self.stale_images);
     }
 
     // Pulls finished background renders in, transmitting them to the terminal
@@ -500,11 +583,12 @@ pub const Context = struct {
                 r.image.height,
                 .rgb,
             ) catch continue;
-            _ = self.cache.put(r.key, .{
+            const evicted = self.cache.put(r.key, .{
                 .image = image,
                 .origin_x = r.image.origin_x,
                 .origin_y = r.image.origin_y,
-            }) catch {};
+            }) catch null;
+            if (evicted) |e| self.stale_images.append(self.allocator, e) catch {};
         }
     }
 
@@ -558,7 +642,7 @@ pub const Context = struct {
         const render_cells: u16 = if (columns > 1) col_cells -| 2 else win.width;
         const render_w_pix: u32 = @as(u32, render_cells) * @as(u32, pix_per_col);
 
-        if (self.current_mode == .marks or self.current_mode == .toc or self.current_mode == .help) return;
+        if (self.current_mode == .marks or self.current_mode == .toc or self.current_mode == .help or self.current_mode == .search_list) return;
 
         var page_num = self.document_handler.getCurrentPageNumber();
         const total_pages = self.document_handler.getTotalPages();
@@ -695,29 +779,99 @@ pub const Context = struct {
         self.requestPrerender(page_num, draw_page, render_w_pix, viewport_h_pix);
     }
 
-    pub fn handleLeftClick(self: *Self, mouse: vaxis.Mouse) !void {
-        if (mouse.col < 0 or mouse.row < 0) return;
-        const click_pix_x: u32 = @as(u32, @intCast(mouse.col)) * @as(u32, self.last_pix_per_col) + mouse.xoffset;
-        const click_pix_y: u32 = @as(u32, @intCast(mouse.row)) * @as(u32, self.last_pix_per_row) + mouse.yoffset;
+    // Maps a mouse cell position to the page and raw PDF coordinates under it.
+    fn pdfPointAt(self: *Self, mouse: vaxis.Mouse) ?PagePoint {
+        const pix_x: u32 = @as(u32, @intCast(mouse.col)) * @as(u32, self.last_pix_per_col) + mouse.xoffset;
+        const pix_y: u32 = @as(u32, @intCast(mouse.row)) * @as(u32, self.last_pix_per_row) + mouse.yoffset;
         const zoom = self.document_handler.getActiveZoom();
-        if (zoom == 0) return;
+        if (zoom == 0) return null;
 
         for (self.visible_pages[0..self.visible_pages_len]) |p| {
-            if (click_pix_y < p.vp_y_top or click_pix_y >= p.vp_y_bot) continue;
-            if (click_pix_x < p.vp_x_left or click_pix_x >= p.vp_x_right) continue;
+            if (pix_y < p.vp_y_top or pix_y >= p.vp_y_bot) continue;
+            if (pix_x < p.vp_x_left or pix_x >= p.vp_x_right) continue;
 
-            const bitmap_x: f32 = @floatFromInt(p.clip_x + (click_pix_x - p.vp_x_left));
-            const bitmap_y: f32 = @floatFromInt(p.clip_y + (click_pix_y - p.vp_y_top));
+            const bitmap_x: f32 = @floatFromInt(p.clip_x + (pix_x - p.vp_x_left));
+            const bitmap_y: f32 = @floatFromInt(p.clip_y + (pix_y - p.vp_y_top));
             var pdf_x = bitmap_x / zoom + p.origin_x;
             const pdf_y = bitmap_y / zoom + p.origin_y;
-            // The bitmap is in aligned space; link rects are in raw page coords.
+            // The bitmap is in aligned space; page content is in raw page coords.
             if (p.page_num % 2 == 1) pdf_x -= @as(f32, @floatFromInt(self.document_handler.getOddShiftX()));
+            return .{ .page = p.page_num, .x = pdf_x, .y = pdf_y };
+        }
+        return null;
+    }
 
-            const target = self.document_handler.findLinkAtPoint(self.allocator, p.page_num, pdf_x, pdf_y) orelse return;
-            defer if (target == .uri) self.allocator.free(target.uri);
-            self.followLink(target);
+    pub fn handleLeftClick(self: *Self, mouse: vaxis.Mouse) !void {
+        const pt = self.pdfPointAt(mouse) orelse return;
+        const target = self.document_handler.findLinkAtPoint(self.allocator, pt.page, pt.x, pt.y) orelse return;
+        defer if (target == .uri) self.allocator.free(target.uri);
+        self.followLink(target);
+    }
+
+    fn selectionPage(self: *Self) ?u16 {
+        if (self.selection_hits.items.len == 0) return null;
+        return self.selection_hits.items[0].page;
+    }
+
+    fn updateSelection(self: *Self, anchor: PagePoint, head: PagePoint) void {
+        self.selection_hits.clearRetainingCapacity();
+        if (self.selection_text.len > 0) {
+            self.allocator.free(self.selection_text);
+            self.selection_text = &.{};
+        }
+        self.selection_text = self.document_handler.selectText(
+            self.allocator,
+            anchor.page,
+            anchor.x,
+            anchor.y,
+            head.x,
+            head.y,
+            &self.selection_hits,
+        ) catch &.{};
+        self.document_handler.setSelectionQuads(self.selection_hits.items);
+        // Each re-render at high zoom is a multi-MB image transmit; during a
+        // drag, refresh the visual at most a few times per second. The state
+        // above is always current, so the release still copies exact text.
+        const now = time.nowNs();
+        if (now - self.selection_render_ns >= 250 * std.time.ns_per_ms) {
+            self.selection_render_ns = now;
+            self.selection_gen +%= 1;
+            self.reload_page = true;
+        }
+    }
+
+    pub fn clearSelection(self: *Self) void {
+        if (self.selection_hits.items.len == 0 and self.selection_text.len == 0) return;
+        self.selection_hits.clearRetainingCapacity();
+        if (self.selection_text.len > 0) {
+            self.allocator.free(self.selection_text);
+            self.selection_text = &.{};
+        }
+        self.document_handler.setSelectionQuads(&.{});
+        self.reload_page = true;
+    }
+
+    fn finishSelection(self: *Self) void {
+        if (self.selection_text.len == 0) return;
+        const w = self.tty.writer();
+        self.vx.copyToSystemClipboard(w, self.selection_text, self.allocator) catch {};
+        w.flush() catch {};
+        // The throttle above may have skipped the last drag updates; render
+        // the final selection state.
+        self.selection_gen +%= 1;
+        self.reload_page = true;
+        // Shown until the next keypress clears progress_text.
+        const msg = std.fmt.bufPrint(&self.progress_buf, " copied {d} chars ", .{self.selection_text.len}) catch return;
+        self.progress_text = msg;
+    }
+
+    // Esc in view mode: drop the selection first; a second Esc clears search.
+    pub fn escapeClear(self: *Self) void {
+        if (self.selection_hits.items.len > 0) {
+            self.clearSelection();
             return;
         }
+        self.clearSearch();
     }
 
     // Does not take ownership of a .uri target; the caller frees it.
@@ -890,6 +1044,10 @@ pub const Context = struct {
         const msg = std.fmt.bufPrint(&self.progress_buf, fmt, args) catch return;
         self.progress_text = msg;
         const win = self.vx.window();
+        // This renders mid-update without a full repaint, so every screen cell
+        // it leaves in place must still reference live memory. Callers that
+        // freed text backing on-screen cells (e.g. TextInput's toOwnedSlice)
+        // must repaint those cells before triggering a flash.
         self.drawStatusBar(win) catch return;
         var w = self.tty.writer();
         self.vx.render(w) catch return;
@@ -1008,7 +1166,7 @@ pub const Context = struct {
         try self.vx.enterAltScreen(writer);
         try self.vx.setMouseMode(writer, true);
         try writer.flush();
-        self.cache.clear();
+        self.clearCache();
         self.reload_page = true;
     }
 
@@ -1139,7 +1297,7 @@ pub const Context = struct {
         }
         self.progress_text = null;
         self.document_handler.setSearchHighlights(self.search_hits.items);
-        self.cache.clear();
+        self.clearCache();
         self.reload_page = true;
         if (self.search_hits.items.len == 0) return;
 
@@ -1163,11 +1321,11 @@ pub const Context = struct {
             self.search_needle = &.{};
         }
         self.search_index = 0;
-        self.cache.clear();
+        self.clearCache();
         self.reload_page = true;
     }
 
-    fn gotoHit(self: *Self, index: usize) void {
+    pub fn gotoHit(self: *Self, index: usize) void {
         const h = self.search_hits.items[index];
         self.pushJump();
         self.document_handler.setCurrentPage(h.page);
@@ -1286,6 +1444,7 @@ pub const Context = struct {
         if (self.current_mode == .marks) self.current_mode.marks.draw(win);
         if (self.current_mode == .toc) self.current_mode.toc.draw(win);
         if (self.current_mode == .help) self.current_mode.help.draw(win);
+        if (self.current_mode == .search_list) self.current_mode.search_list.draw(win);
     }
 
     pub fn toggleFullScreen(self: *Self) void {

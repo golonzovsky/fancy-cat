@@ -19,6 +19,16 @@ int fz_page_text_bbox_z(fz_context *ctx, fz_document *doc, int page_number, fz_r
 // Searches one page for needle (case-insensitive). Fills up to max_quads hit quads;
 // returns the hit count (0 on error or no match).
 int fz_search_page_z(fz_context *ctx, fz_document *doc, int page_number, const char *needle, fz_quad *quads, int max_quads);
+// UTF-8 text of the stext line containing (or nearest to) point (x,y) on the page,
+// written NUL-terminated into out. Returns the byte length (0 if no line nearby).
+int fz_line_text_at_z(fz_context *ctx, fz_document *doc, int page_number, float x, float y, char *out, int out_size);
+// Text selection between points a and b, snapped to characters. Fills up to
+// max_quads highlight quads (count in *quad_count) and writes the selected text
+// NUL-terminated into text_out. Returns the text byte length.
+int fz_selection_z(fz_context *ctx, fz_document *doc, int page_number,
+                   float ax, float ay, float bx, float by,
+                   fz_quad *quads, int max_quads, int *quad_count,
+                   char *text_out, int text_out_size);
 // Streaming-style page extractor. The C side walks mupdf's stext, filters footers and
 // diagram-vs-text regions, rasterizes vector diagrams to PNG, and surfaces structured events
 // to the Zig caller, which is responsible for all markdown formatting.

@@ -118,7 +118,13 @@ fn buildKeyLines(self: *Self, a: std.mem.Allocator) []const Line {
     add(a, &lines, .{ .header = true, .label = "Search" });
     add(a, &lines, .{ .keys = fmtKey(a, km.search), .label = "search document" });
     add(a, &lines, .{ .keys = two(a, fmtKey(a, km.search_next), fmtKey(a, km.search_prev)), .label = "next / prev match" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.search_list), .label = "match list" });
     add(a, &lines, .{ .keys = fmtKey(a, km.exit_command_mode), .label = "clear highlights" });
+
+    add(a, &lines, .{ .header = true, .label = "Mouse" });
+    add(a, &lines, .{ .keys = "drag", .label = "select text, copy" });
+    add(a, &lines, .{ .keys = "click", .label = "follow link" });
+    add(a, &lines, .{ .keys = "wheel", .label = "scroll, C-: zoom" });
 
     add(a, &lines, .{ .header = true, .label = "Marks & contents" });
     add(a, &lines, .{ .keys = fmtKey(a, km.set_mark), .label = "set mark (a-z)" });

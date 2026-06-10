@@ -40,7 +40,8 @@ const bindings = .{
     .{ "search", enterSearch },
     .{ "search_next", Context.searchNext },
     .{ "search_prev", Context.searchPrev },
-    .{ "exit_command_mode", Context.clearSearch },
+    .{ "search_list", enterSearchList },
+    .{ "exit_command_mode", Context.escapeClear },
 };
 
 pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
@@ -146,6 +147,10 @@ fn showHelp(ctx: *Context) void {
 
 fn enterSearch(ctx: *Context) void {
     ctx.changeMode(.search);
+}
+
+fn enterSearchList(ctx: *Context) void {
+    ctx.changeMode(.search_list);
 }
 
 fn startSetMark(ctx: *Context) void {

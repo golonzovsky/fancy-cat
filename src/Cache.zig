@@ -10,6 +10,9 @@ pub const Key = struct {
     crop: bool,
     spread: bool,
     shift_x: i32,
+    // Selection generation: 0 for pages without an active selection; bumped on
+    // every selection change so the page with baked-in highlights re-renders once.
+    sel: u32,
 };
 pub const CachedImage = struct {
     image: vaxis.Image,
@@ -51,11 +54,14 @@ pub fn deinit(self: *Self) void {
     self.map.deinit();
 }
 
-pub fn clear(self: *Self) void {
+// Empties the cache, handing the displaced images to the caller, which owns
+// freeing them terminal-side (deferred until after the next render to avoid
+// flicker).
+pub fn clearInto(self: *Self, allocator: std.mem.Allocator, out: *std.ArrayList(CachedImage)) void {
     var current = self.head;
     while (current) |node| {
         const next = node.next;
-        // To avoid flicker, image is freed during put eviction
+        out.append(allocator, node.value) catch {};
         self.allocator.destroy(node);
         current = next;
     }
@@ -75,10 +81,12 @@ pub fn get(self: *Self, key: Key) ?CachedImage {
     return node.value;
 }
 
-pub fn put(self: *Self, key: Key, image: CachedImage) !bool {
+// Returns the evicted entry, if insertion pushed one out; the caller owns
+// freeing its terminal-side image.
+pub fn put(self: *Self, key: Key, image: CachedImage) !?CachedImage {
     if (self.map.get(key)) |node| {
         self.moveToFront(node);
-        return false;
+        return null;
     }
 
     const new_node = try self.allocator.create(Node);
@@ -94,10 +102,12 @@ pub fn put(self: *Self, key: Key, image: CachedImage) !bool {
 
     if (self.map.count() > self.lru_size) {
         const tail_node = self.tail orelse unreachable;
+        const evicted = tail_node.value;
         _ = self.remove(tail_node.key);
+        return evicted;
     }
 
-    return true;
+    return null;
 }
 
 fn remove(self: *Self, key: Key) bool {

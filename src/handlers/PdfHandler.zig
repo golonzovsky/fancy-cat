@@ -47,6 +47,7 @@ pix_scroll_y: i32,
 rendered_w: u32,
 last_viewport_w: u32,
 search_highlights: []const SearchHit,
+selection_quads: []const SearchHit,
 // Serializes all mupdf access: fz_context is not thread-safe, and the
 // prerender worker renders pages concurrently with the main thread.
 render_mutex: std.Io.Mutex,
@@ -117,6 +118,7 @@ pub fn init(
         .rendered_w = 0,
         .last_viewport_w = 0,
         .search_highlights = &.{},
+        .selection_quads = &.{},
         .render_mutex = .init,
         .config = config,
     };
@@ -306,12 +308,17 @@ fn runPageInto(self: *Self, page: [*c]c.fz_page, ctm: c.fz_matrix, pix: [*c]c.fz
     c.fz_close_device(self.ctx, dev);
 }
 
-fn highlightHits(self: *Self, pix: [*c]c.fz_pixmap, page_num: u16, ctm: c.fz_matrix) void {
-    for (self.search_highlights) |h| {
+fn invertRects(self: *Self, pix: [*c]c.fz_pixmap, page_num: u16, ctm: c.fz_matrix, hits: []const SearchHit) void {
+    for (hits) |h| {
         if (h.page != page_num) continue;
         const r = c.fz_transform_rect(c.fz_make_rect(h.x0, h.y0, h.x1, h.y1), ctm);
         c.fz_invert_pixmap_rect(self.ctx, pix, c.fz_irect_from_rect(r));
     }
+}
+
+fn highlightHits(self: *Self, pix: [*c]c.fz_pixmap, page_num: u16, ctm: c.fz_matrix) void {
+    self.invertRects(pix, page_num, ctm, self.search_highlights);
+    self.invertRects(pix, page_num, ctm, self.selection_quads);
 }
 
 pub fn renderPage(
@@ -770,6 +777,59 @@ pub fn searchPage(self: *Self, allocator: std.mem.Allocator, page_number: u16, n
         const r = c.fz_rect_from_quad(q);
         try out.append(allocator, .{ .page = page_number, .x0 = r.x0, .y0 = r.y0, .x1 = r.x1, .y1 = r.y1 });
     }
+}
+
+pub fn setSelectionQuads(self: *Self, hits: []const SearchHit) void {
+    self.selection_quads = hits;
+}
+
+// Snaps (a, b) to characters, fills `out` with the selection's highlight quads,
+// and returns the selected text (caller owns).
+pub fn selectText(
+    self: *Self,
+    allocator: std.mem.Allocator,
+    page_number: u16,
+    ax: f32,
+    ay: f32,
+    bx: f32,
+    by: f32,
+    out: *std.ArrayList(SearchHit),
+) ![]u8 {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+
+    var quads: [256]c.fz_quad = undefined;
+    var quad_count: c_int = 0;
+    const text_buf = try allocator.alloc(u8, 16384);
+    defer allocator.free(text_buf);
+    const n = c.fz_selection_z(
+        self.ctx,
+        self.doc,
+        @as(c_int, @intCast(page_number)),
+        ax,
+        ay,
+        bx,
+        by,
+        &quads,
+        quads.len,
+        &quad_count,
+        text_buf.ptr,
+        @intCast(text_buf.len),
+    );
+    for (quads[0..@intCast(quad_count)]) |q| {
+        const r = c.fz_rect_from_quad(q);
+        try out.append(allocator, .{ .page = page_number, .x0 = r.x0, .y0 = r.y0, .x1 = r.x1, .y1 = r.y1 });
+    }
+    return allocator.dupe(u8, text_buf[0..@intCast(n)]);
+}
+
+pub fn lineTextAt(self: *Self, allocator: std.mem.Allocator, page_number: u16, x: f32, y: f32) ![]u8 {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+
+    var buf: [512]u8 = undefined;
+    const n = c.fz_line_text_at_z(self.ctx, self.doc, @as(c_int, @intCast(page_number)), x, y, &buf, buf.len);
+    return allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
 pub fn takePendingScrollPdfY(self: *Self) ?f32 {

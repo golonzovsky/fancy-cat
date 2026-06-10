@@ -35,6 +35,7 @@ pub const KeyMap = struct {
     search: vaxis.Key = .{ .codepoint = '/' },
     search_next: vaxis.Key = .{ .codepoint = 'N' },
     search_prev: vaxis.Key = .{ .codepoint = 'P' },
+    search_list: vaxis.Key = .{ .codepoint = 'S' },
 
     pub fn parse(val: std.json.Value, allocator: std.mem.Allocator) KeyMap {
         var keymap = KeyMap{};

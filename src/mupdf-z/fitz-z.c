@@ -388,6 +388,104 @@ int fz_search_page_z(fz_context *ctx, fz_document *doc, int page_number, const c
   return count;
 }
 
+typedef struct {
+  fz_stext_line *line;
+  float d;
+} line_find;
+
+static void find_line_at(fz_stext_block *blocks, float x, float y, line_find *bf) {
+  for (fz_stext_block *b = blocks; b; b = b->next) {
+    if (b->type == FZ_STEXT_BLOCK_TEXT) {
+      for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
+        fz_rect r = l->bbox;
+        if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) {
+          bf->line = l;
+          bf->d = 0;
+          return;
+        }
+        float cy = (r.y0 + r.y1) * 0.5f;
+        float dy = cy > y ? cy - y : y - cy;
+        if (dy < bf->d) {
+          bf->d = dy;
+          bf->line = l;
+        }
+      }
+    } else if (b->type == FZ_STEXT_BLOCK_STRUCT && b->u.s.down) {
+      find_line_at(b->u.s.down->first_block, x, y, bf);
+      if (bf->d == 0) return;
+    }
+  }
+}
+
+int fz_line_text_at_z(fz_context *ctx, fz_document *doc, int page_number, float x, float y, char *out, int out_size) {
+  int written = 0;
+  fz_page *page = NULL;
+  fz_stext_page *st = NULL;
+  fz_try(ctx) {
+    page = fz_load_page(ctx, doc, page_number);
+    fz_stext_options opts = {0};
+    st = fz_new_stext_page_from_page(ctx, page, &opts);
+    line_find bf = { NULL, 24.0f };
+    find_line_at(st->first_block, x, y, &bf);
+    if (bf.line) {
+      int n = 0;
+      for (fz_stext_char *c = bf.line->first_char; c; c = c->next) {
+        char buf[8];
+        int len = fz_runetochar(buf, c->c);
+        if (n + len >= out_size) break;
+        memcpy(out + n, buf, len);
+        n += len;
+      }
+      out[n] = 0;
+      written = n;
+    }
+  }
+  fz_always(ctx) {
+    if (st) fz_drop_stext_page(ctx, st);
+    if (page) fz_drop_page(ctx, page);
+  }
+  fz_catch(ctx) { written = 0; }
+  return written;
+}
+
+int fz_selection_z(fz_context *ctx, fz_document *doc, int page_number,
+                   float ax, float ay, float bx, float by,
+                   fz_quad *quads, int max_quads, int *quad_count,
+                   char *text_out, int text_out_size) {
+  int written = 0;
+  fz_page *page = NULL;
+  fz_stext_page *st = NULL;
+  char *sel = NULL;
+  *quad_count = 0;
+  fz_try(ctx) {
+    page = fz_load_page(ctx, doc, page_number);
+    fz_stext_options opts = {0};
+    st = fz_new_stext_page_from_page(ctx, page, &opts);
+    fz_point a = fz_make_point(ax, ay);
+    fz_point b = fz_make_point(bx, by);
+    fz_snap_selection(ctx, st, &a, &b, FZ_SELECT_CHARS);
+    *quad_count = fz_highlight_selection(ctx, st, a, b, quads, max_quads);
+    sel = fz_copy_selection(ctx, st, a, b, 0);
+    if (sel) {
+      int len = (int)strlen(sel);
+      if (len >= text_out_size) len = text_out_size - 1;
+      memcpy(text_out, sel, len);
+      text_out[len] = 0;
+      written = len;
+    }
+  }
+  fz_always(ctx) {
+    if (sel) fz_free(ctx, sel);
+    if (st) fz_drop_stext_page(ctx, st);
+    if (page) fz_drop_page(ctx, page);
+  }
+  fz_catch(ctx) {
+    written = 0;
+    *quad_count = 0;
+  }
+  return written;
+}
+
 int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size) {
   int written = 0;
   fz_try(ctx) {
