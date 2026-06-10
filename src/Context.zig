@@ -73,7 +73,7 @@ pub const Context = struct {
     history: History,
     positions: Positions,
     doc_key: []u8,
-    doc_abs_path: []u8,
+    doc_abs_path: [:0]u8,
     outline: []const PdfHandler.OutlineEntry,
     reload_page: bool,
     cache: Cache,
@@ -109,7 +109,7 @@ pub const Context = struct {
         const doc_key = try document_handler.getDocumentKey(allocator);
         errdefer allocator.free(doc_key);
 
-        const doc_abs_path = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch try allocator.dupe(u8, path);
+        const doc_abs_path = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch try allocator.dupeZ(u8, path);
         errdefer allocator.free(doc_abs_path);
 
         var positions = Positions.init(allocator, io, env, config, doc_key);
@@ -535,6 +535,11 @@ pub const Context = struct {
     }
 
     pub fn drawCurrentPage(self: *Self, win: vaxis.Window) !void {
+        // Zero-size screen (e.g. during startup before the first real winsize)
+        // would divide by zero below.
+        if (win.screen.width == 0 or win.screen.height == 0 or
+            win.screen.width_pix == 0 or win.screen.height_pix == 0) return;
+
         const pix_per_col = try std.math.divCeil(u16, win.screen.width_pix, win.screen.width);
         const pix_per_row = try std.math.divCeil(u16, win.screen.height_pix, win.screen.height);
         self.last_pix_per_col = pix_per_col;
@@ -1251,7 +1256,10 @@ pub const Context = struct {
 
         const width = vaxis.gwidth.gwidth(text, .wcwidth);
 
-        if (!left_aligned) col_offset.* -= width;
+        if (!left_aligned) {
+            if (width > col_offset.*) return; // doesn't fit; skip the item
+            col_offset.* -= width;
+        }
 
         _ = status_bar.print(
             &.{.{ .text = text, .style = item.style }},
