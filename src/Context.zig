@@ -18,8 +18,6 @@ const Positions = @import("services/Positions.zig");
 const Prerenderer = @import("services/Prerenderer.zig");
 const time = @import("utilities/time.zig");
 
-pub const panic = vaxis.panic_handler;
-
 pub const Event = union(enum) {
     key_press: vaxis.Key,
     mouse: vaxis.Mouse,
@@ -166,7 +164,12 @@ pub const Context = struct {
 
         const outline = document_handler.loadOutline(allocator) catch &.{};
 
-        const vx = try vaxis.init(io, allocator, env, .{});
+        // The clipboard allocator must be set: without it, vaxis's parser
+        // null-unwraps on any OSC 52 sequence the terminal sends back (e.g.
+        // Ghostty responding around its clipboard-write confirmation), which
+        // crashes the input thread. The decoded text is freed by the loop
+        // since our Event union has no `paste` field.
+        const vx = try vaxis.init(io, allocator, env, .{ .system_clipboard_allocator = allocator });
         const buf = try allocator.alloc(u8, 4096);
         const tty = try vaxis.Tty.init(io, buf);
         const reload_indicator_timer = ReloadIndicatorTimer.init(config);
@@ -781,6 +784,9 @@ pub const Context = struct {
 
     // Maps a mouse cell position to the page and raw PDF coordinates under it.
     fn pdfPointAt(self: *Self, mouse: vaxis.Mouse) ?PagePoint {
+        // Coordinates are negative when the event is outside our pane (e.g.
+        // clicking another terminal split).
+        if (mouse.col < 0 or mouse.row < 0) return null;
         const pix_x: u32 = @as(u32, @intCast(mouse.col)) * @as(u32, self.last_pix_per_col) + mouse.xoffset;
         const pix_y: u32 = @as(u32, @intCast(mouse.row)) * @as(u32, self.last_pix_per_row) + mouse.yoffset;
         const zoom = self.document_handler.getActiveZoom();

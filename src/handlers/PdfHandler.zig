@@ -125,6 +125,8 @@ pub fn init(
 }
 
 pub fn deinit(self: *Self) void {
+    if (self.search_highlights.len > 0) self.allocator.free(self.search_highlights);
+    if (self.selection_quads.len > 0) self.allocator.free(self.selection_quads);
     c.fz_drop_document(self.ctx, self.doc);
     c.fz_drop_context(self.ctx);
 }
@@ -763,8 +765,14 @@ pub fn setPendingScrollPdfY(self: *Self, y: f32) void {
     self.pending_scroll_pdf_y = y;
 }
 
+// Takes an owned copy under the render mutex: the prerender worker iterates
+// these slices mid-render, so they must not alias caller ArrayList memory
+// that reallocates on growth.
 pub fn setSearchHighlights(self: *Self, hits: []const SearchHit) void {
-    self.search_highlights = hits;
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+    if (self.search_highlights.len > 0) self.allocator.free(self.search_highlights);
+    self.search_highlights = self.allocator.dupe(SearchHit, hits) catch &.{};
 }
 
 pub fn searchPage(self: *Self, allocator: std.mem.Allocator, page_number: u16, needle: [*:0]const u8, out: *std.ArrayList(SearchHit)) !void {
@@ -780,7 +788,10 @@ pub fn searchPage(self: *Self, allocator: std.mem.Allocator, page_number: u16, n
 }
 
 pub fn setSelectionQuads(self: *Self, hits: []const SearchHit) void {
-    self.selection_quads = hits;
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+    if (self.selection_quads.len > 0) self.allocator.free(self.selection_quads);
+    self.selection_quads = self.allocator.dupe(SearchHit, hits) catch &.{};
 }
 
 // Snaps (a, b) to characters, fills `out` with the selection's highlight quads,

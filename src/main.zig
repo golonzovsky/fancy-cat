@@ -1,6 +1,12 @@
 const std = @import("std");
+const vaxis = @import("vaxis");
 const Context = @import("Context.zig").Context;
 const Positions = @import("services/Positions.zig");
+
+// Must live in the root file to take effect: restores the terminal (exits alt
+// screen, disables mouse reporting) before printing a panic trace, so crashes
+// don't leave the terminal broken with the trace hidden in the alt screen.
+pub const panic = vaxis.panic_handler;
 
 // Types for build.zig.zon
 // For now metadata is only used in main.zig, but can move it to types.zig if needed eleswhere
