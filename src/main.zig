@@ -38,13 +38,45 @@ fn shortenHome(path: []const u8, home: ?[]const u8) []const u8 {
     return path;
 }
 
-// Prints the recent-files list and reads a selection from stdin.
-fn pickRecent(init: std.process.Init, stdout: *std.Io.Writer) !?[:0]const u8 {
-    const arena = init.arena.allocator();
-    const recents = Positions.listRecent(arena, init.io, init.environ_map);
-    if (recents.len == 0) return null;
+// Lines are fed to fzf as "index<TAB>display"; the index column is hidden
+// (--with-nth=2..) and parsed back from the selected line.
+fn fzfPick(init: std.process.Init, recents: []const Positions.RecentEntry, home: ?[]const u8) !?usize {
+    var child = std.process.spawn(init.io, .{
+        .argv = &.{ "fzf", "--delimiter=\t", "--with-nth=2..", "--height=40%", "--reverse", "--prompt=open> " },
+        .environ_map = init.environ_map,
+        .stdin = .pipe,
+        .stdout = .pipe,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.FzfNotFound,
+        else => return err,
+    };
 
-    const home = init.environ_map.get("HOME");
+    feed: {
+        var wbuf: [1024]u8 = undefined;
+        var fzf_in = child.stdin.?.writer(init.io, &wbuf);
+        const w = &fzf_in.interface;
+        for (recents, 0..) |r, i| {
+            const prefix: []const u8 = if (shortenHome(r.path, home).ptr != r.path.ptr) "~/" else "";
+            w.print("{d}\t{s}{s}  (p.{d})\n", .{ i, prefix, shortenHome(r.path, home), r.page + 1 }) catch break :feed;
+        }
+        w.flush() catch {};
+    }
+    child.stdin.?.close(init.io);
+    child.stdin = null;
+
+    var rbuf: [4096]u8 = undefined;
+    var fzf_out = child.stdout.?.reader(init.io, &rbuf);
+    const choice: ?usize = blk: {
+        const line = fzf_out.interface.takeDelimiterExclusive('\n') catch break :blk null;
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse break :blk null;
+        break :blk std.fmt.parseInt(usize, line[0..tab], 10) catch null;
+    };
+    _ = child.wait(init.io) catch {};
+    return choice;
+}
+
+// Numbered-list fallback for when fzf is not installed.
+fn promptPick(init: std.process.Init, recents: []const Positions.RecentEntry, home: ?[]const u8, stdout: *std.Io.Writer) !?usize {
     const shown = @min(recents.len, 15);
     try stdout.writeAll("Recent:\n");
     for (recents[0..shown], 1..) |r, i| {
@@ -60,7 +92,7 @@ fn pickRecent(init: std.process.Init, stdout: *std.Io.Writer) !?[:0]const u8 {
     const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
     const choice: usize = if (trimmed.len == 0) 1 else std.fmt.parseInt(usize, trimmed, 10) catch return null;
     if (choice < 1 or choice > shown) return null;
-    return try arena.dupeZ(u8, recents[choice - 1].path);
+    return choice - 1;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -89,11 +121,20 @@ pub fn main(init: std.process.Init) !void {
     var path: [:0]const u8 = undefined;
     var initial_page: ?u16 = null;
     if (args.len == 1) {
-        path = try pickRecent(init, stdout) orelse {
+        const arena = init.arena.allocator();
+        const recents = Positions.listRecent(arena, init.io, init.environ_map);
+        if (recents.len == 0) {
             try stderr.writeAll("Usage: fancy-cat <path-to-pdf> <optional-page-number>\n");
             try stderr.flush();
             return;
+        }
+        const home = init.environ_map.get("HOME");
+        const picked = fzfPick(init, recents, home) catch |err| switch (err) {
+            error.FzfNotFound => try promptPick(init, recents, home, stdout),
+            else => return err,
         };
+        const idx = picked orelse return;
+        path = try arena.dupeZ(u8, recents[idx].path);
     } else {
         path = args[1];
         if (args.len == 3) initial_page = try std.fmt.parseInt(u16, args[2], 10);
