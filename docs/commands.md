@@ -30,6 +30,10 @@ non-obvious ones:
   the full match list; Esc clears highlights
 - mouse drag selects text and copies it on release (OSC 52); `H` persists the
   selection as a highlight; `V` opens the highlights navigator
+- `j`/`k` scroll a step; `Ctrl+D`/`Ctrl+U` scroll half a page with a short
+  smooth animation
+- `i`/`o` zoom in/out (default step ~12.5% per press; set `general.zoom_step` to
+  change, e.g. `1.25` for the old coarser feel)
 - `t` auto-crop, `d` spread, `T` table of contents, `M` marks, `;` link hints,
   `m<a-z>`/`'<a-z>` set/jump mark, `Ctrl+O`/`Tab` jump back/forward,
   `e`/`E` page/chapter in `$EDITOR`

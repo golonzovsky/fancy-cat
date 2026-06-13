@@ -91,6 +91,8 @@ pub const Context = struct {
     visible_pages_len: usize,
     last_pix_per_col: u16,
     last_pix_per_row: u16,
+    // Visible page area in device pixels, captured each draw; drives half-page scroll.
+    last_viewport_h_pix: u32,
     jump_back: std.ArrayList(JumpPosition),
     jump_forward: std.ArrayList(JumpPosition),
     lock_horizontal_scroll: bool,
@@ -229,6 +231,7 @@ pub const Context = struct {
             .visible_pages_len = 0,
             .last_pix_per_col = 1,
             .last_pix_per_row = 1,
+            .last_viewport_h_pix = 0,
             .jump_back = .empty,
             .jump_forward = .empty,
             .lock_horizontal_scroll = restored_hlock,
@@ -412,6 +415,38 @@ pub const Context = struct {
 
     pub fn resetCurrentPage(self: *Self) void {
         self.reload_page = true;
+    }
+
+    // Half the visible viewport, scrolled with a short ease-out animation.
+    // Cheap: each frame only updates the kitty clip_region of the cached page
+    // (no re-render), so this stays smooth even at high zoom.
+    pub fn smoothScrollHalf(self: *Self, down: bool) void {
+        const total_px: f32 = @floatFromInt(@max(1, self.last_viewport_h_pix / 2));
+        // scrollY(dy) does pix_scroll_y -= dy, so down = negative dy.
+        self.animateScrollBy(if (down) -total_px else total_px);
+    }
+
+    fn animateScrollBy(self: *Self, total_dy: f32) void {
+        const frames: usize = 10;
+        const frame_ns: u64 = 11 * std.time.ns_per_ms; // ~110ms total
+        var applied: f32 = 0;
+        var i: usize = 1;
+        while (i <= frames) : (i += 1) {
+            const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(frames));
+            const eased = 1.0 - std.math.pow(f32, 1.0 - t, 3.0); // ease-out cubic
+            const target = total_dy * eased;
+            self.document_handler.scrollY(target - applied);
+            applied = target;
+            self.renderFrame() catch return;
+            if (i < frames) time.sleep(frame_ns);
+        }
+    }
+
+    fn renderFrame(self: *Self) !void {
+        try self.draw();
+        var buffered = self.tty.writer();
+        try self.vx.render(buffered);
+        try buffered.flush();
     }
 
     pub fn handleKeyStroke(self: *Self, key: vaxis.Key) !void {
@@ -699,6 +734,7 @@ pub const Context = struct {
         var viewport_rows: u16 = win.height;
         if (self.config.status_bar.enabled or self.current_mode == .command or self.current_mode == .search) viewport_rows -|= 1;
         const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
+        self.last_viewport_h_pix = viewport_h_pix;
 
         // In spread mode the strip flows through two columns; pages render at
         // column width (minus a 1-cell margin per side) and may straddle the
@@ -1378,6 +1414,11 @@ pub const Context = struct {
         if (self.loop) |loop| try loop.start();
 
         try self.vx.enterAltScreen(writer);
+        // Re-measure: the alt screen was torn down and rebuilt while the editor
+        // owned the tty, so screen.width_pix/height_pix are stale. Without this
+        // the fit-zoom renders slightly small until the next SIGWINCH. Mirrors
+        // the startup query; must run after loop.start() (input thread alive).
+        try self.vx.queryTerminal(writer, std.Io.Duration.fromSeconds(1));
         try self.vx.setMouseMode(writer, true);
         try writer.flush();
         self.clearCache();

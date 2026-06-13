@@ -25,6 +25,8 @@ const bindings = .{
     .{ "scroll_down", scrollDown },
     .{ "scroll_left", scrollLeft },
     .{ "scroll_right", scrollRight },
+    .{ "scroll_half_down", scrollHalfDown },
+    .{ "scroll_half_up", scrollHalfUp },
     .{ "colorize", toggleInvert },
     .{ "enter_command_mode", enterCommand },
     .{ "hint_mode", enterHints },
@@ -117,6 +119,14 @@ fn scrollUp(ctx: *Context) void {
 
 fn scrollDown(ctx: *Context) void {
     ctx.document_handler.scrollY(-ctx.config.general.scroll_step);
+}
+
+fn scrollHalfDown(ctx: *Context) void {
+    ctx.smoothScrollHalf(true);
+}
+
+fn scrollHalfUp(ctx: *Context) void {
+    ctx.smoothScrollHalf(false);
 }
 
 fn scrollLeft(ctx: *Context) void {

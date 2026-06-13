@@ -94,6 +94,7 @@ fn buildKeyLines(self: *Self, a: std.mem.Allocator) []const Line {
     add(a, &lines, .{ .header = true, .label = "Navigation" });
     add(a, &lines, .{ .keys = two(a, fmtKey(a, km.prev), fmtKey(a, km.next)), .label = "prev / next page" });
     add(a, &lines, .{ .keys = std.fmt.allocPrint(a, "{s} {s} {s} {s}", .{ fmtKey(a, km.scroll_left), fmtKey(a, km.scroll_down), fmtKey(a, km.scroll_up), fmtKey(a, km.scroll_right) }) catch "", .label = "scroll" });
+    add(a, &lines, .{ .keys = two(a, fmtKey(a, km.scroll_half_down), fmtKey(a, km.scroll_half_up)), .label = "half-page down / up" });
     add(a, &lines, .{ .keys = two(a, fmtKey(a, km.jump_back), fmtKey(a, km.jump_forward)), .label = "jump back / forward" });
 
     add(a, &lines, .{ .header = true, .label = "View" });
