@@ -13,16 +13,21 @@ pub const Result = struct {
     image: types.EncodedImage,
 };
 
+// Render-ahead window: up to this many neighbor pages (e.g. +1..+3, -1..-3)
+// are prerendered per request. render_mutex serializes the actual renders, so
+// the worker just churns through them in priority order in the background.
+pub const slots = 6;
+
 context: *Context,
 thread: ?std.Thread,
 mutex: std.Io.Mutex,
 cond: std.Io.Condition,
 quit: bool,
-req_pages: [2]?u16,
+req_pages: [slots]?u16,
 req_w: u32,
 req_h: u32,
 has_req: bool,
-results: [2]?*Result,
+results: [slots]?*Result,
 
 pub fn init() Self {
     return .{
@@ -31,11 +36,11 @@ pub fn init() Self {
         .mutex = .init,
         .cond = .init,
         .quit = false,
-        .req_pages = .{ null, null },
+        .req_pages = .{null} ** slots,
         .req_w = 0,
         .req_h = 0,
         .has_req = false,
-        .results = .{ null, null },
+        .results = .{null} ** slots,
     };
 }
 
@@ -76,7 +81,7 @@ fn freeResult(self: *Self, r: *Result) void {
 }
 
 // Latest request wins; pending older requests are coalesced away.
-pub fn request(self: *Self, pages: [2]?u16, w: u32, h: u32) void {
+pub fn request(self: *Self, pages: [slots]?u16, w: u32, h: u32) void {
     if (self.thread == null) return;
     const io = self.context.io;
     self.mutex.lockUncancelable(io);
@@ -89,13 +94,28 @@ pub fn request(self: *Self, pages: [2]?u16, w: u32, h: u32) void {
 }
 
 // Hands finished renders to the caller, which takes ownership.
-pub fn claim(self: *Self) [2]?*Result {
+pub fn claim(self: *Self) [slots]?*Result {
     const io = self.context.io;
     self.mutex.lockUncancelable(io);
     defer self.mutex.unlock(io);
     const out = self.results;
-    self.results = .{ null, null };
+    self.results = .{null} ** slots;
     return out;
+}
+
+// Caller holds the mutex. Parks into the first free slot, or evicts the oldest
+// (slot 0) and shifts down when full, so the newest result is always kept.
+fn park(self: *Self, result: *Result) void {
+    for (&self.results) |*slot| {
+        if (slot.* == null) {
+            slot.* = result;
+            return;
+        }
+    }
+    self.freeResult(self.results[0].?);
+    var i: usize = 0;
+    while (i + 1 < slots) : (i += 1) self.results[i] = self.results[i + 1];
+    self.results[slots - 1] = result;
 }
 
 fn run(self: *Self) void {
@@ -130,14 +150,7 @@ fn run(self: *Self) void {
                 self.freeResult(result);
                 return;
             }
-            if (self.results[0] == null) {
-                self.results[0] = result;
-            } else if (self.results[1] == null) {
-                self.results[1] = result;
-            } else {
-                self.freeResult(self.results[0].?);
-                self.results[0] = result;
-            }
+            self.park(result);
             self.mutex.unlock(io);
 
             if (self.context.loop) |loop| loop.postEvent(.prerender_ready) catch {};

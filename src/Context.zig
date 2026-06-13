@@ -695,25 +695,32 @@ pub const Context = struct {
     }
 
     // Called after the draw walk, so every visible page is already cached;
-    // `next_page` is where the walk stopped. Prefetches one page forward and
-    // one back of what's on screen.
+    // `next_page` is where the walk stopped. Prefetches a render-ahead window of
+    // up to ±3 pages (forward-biased, since reading is mostly forward) so fast
+    // flipping stays cache-warm. Uncached targets only.
     fn requestPrerender(self: *Self, top_page: u16, next_page: u16, w: u32, h: u32) void {
         if (!self.config.cache.enabled) return;
         if (self.document_handler.getActiveZoom() <= 0) return;
 
-        var targets: [2]?u16 = .{ null, null };
+        const window = 3;
+        var targets: [Prerenderer.slots]?u16 = .{null} ** Prerenderer.slots;
         var n: usize = 0;
         const total = self.document_handler.getTotalPages();
+
         var fwd: u32 = next_page;
-        while (fwd < @min(@as(u32, next_page) + 2, total) and n < 2) : (fwd += 1) {
+        while (fwd < @min(@as(u32, next_page) + window, total) and n < targets.len) : (fwd += 1) {
             if (!self.cache.contains(self.cacheKeyFor(@intCast(fwd)))) {
                 targets[n] = @intCast(fwd);
                 n += 1;
             }
         }
-        if (n < 2 and top_page > 0 and !self.cache.contains(self.cacheKeyFor(top_page - 1))) {
-            targets[n] = top_page - 1;
-            n += 1;
+        var back: u16 = 1;
+        while (back <= window and top_page >= back and n < targets.len) : (back += 1) {
+            const p = top_page - back;
+            if (!self.cache.contains(self.cacheKeyFor(p))) {
+                targets[n] = p;
+                n += 1;
+            }
         }
         if (n == 0) return;
         self.prerenderer.request(targets, w, h);
@@ -791,6 +798,9 @@ pub const Context = struct {
         const scroll_x = self.document_handler.getScrollX();
         const ppr_i: i32 = @intCast(pix_per_row);
         const ppc_i: i32 = @intCast(pix_per_col);
+        // Quantize to whole cells: a non-cell-aligned clip makes the terminal
+        // scale the partial top cell (visible vertical distortion on Ghostty),
+        // which isn't worth the sub-cell smoothness. Scroll steps by a cell.
         const display_scroll_y: i32 = @divFloor(scroll_y, ppr_i) * ppr_i;
         const display_scroll_x: i32 = @divFloor(scroll_x, ppc_i) * ppc_i;
         var draw_page = page_num;

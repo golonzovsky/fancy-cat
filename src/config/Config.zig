@@ -195,8 +195,9 @@ pub const StatusBar = struct {
 
 pub const Cache = struct {
     enabled: bool = true,
-    // Number of pages to cache
-    lru_size: u16 = 10,
+    // Number of rendered pages kept resident (also terminal-side images). Sized
+    // to hold the ±3 render-ahead window plus the visible pages without churn.
+    lru_size: u16 = 14,
 
     pub fn parse(val: std.json.Value, allocator: std.mem.Allocator) Cache {
         return parseFields(Cache, val, allocator);
