@@ -128,6 +128,7 @@ pub const commands = .{
     .{ handleAltShift, ":oddx N", "shift odd pages (pt)" },
     .{ handleHLock, ":hlock", "lock horiz scroll" },
     .{ handleSpread, ":spread", "2-column spread" },
+    .{ handleFit, ":fit", "lock zoom to width" },
     .{ handleCrop, ":crop [TRBL]", "trim margins; bare=reset" },
     .{ handleHelp, ":help", "this help" },
     .{ handleQuit, ":q", "quit" },
@@ -197,6 +198,14 @@ fn handleHLock(self: *Self, cmd: []const u8) bool {
 fn handleSpread(self: *Self, cmd: []const u8) bool {
     if (!std.mem.eql(u8, cmd, "spread")) return false;
     self.context.document_handler.toggleSpread();
+    self.context.resetCurrentPage();
+    return true;
+}
+
+fn handleFit(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.eql(u8, cmd, "fit")) return false;
+    self.context.document_handler.toggleFitWidth();
+    self.context.clearCache();
     self.context.resetCurrentPage();
     return true;
 }

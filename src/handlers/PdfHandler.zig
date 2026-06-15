@@ -24,6 +24,10 @@ path: [:0]const u8,
 active_zoom: f32,
 default_zoom: f32,
 width_mode: bool,
+// Locked fit-to-width: every render recomputes zoom so the cropped page width
+// exactly fills the window (or the column width in spread = two pages). Tracks
+// window resize and crop changes; cleared by a manual zoom (i/o, :N%).
+fit_width: bool,
 // Two-column continuous flow: the right column continues the strip where
 // the left column's bottom ends, so pages may straddle the column break.
 spread: bool,
@@ -107,6 +111,7 @@ pub fn init(
         .active_zoom = 0,
         .default_zoom = 0,
         .width_mode = false,
+        .fit_width = false,
         .spread = false,
         .crop_to_content = false,
         .crop_margin = 4,
@@ -207,8 +212,9 @@ pub fn changePage(self: *Self, delta: i32) bool {
 
 fn calculateZoomLevel(self: *Self, window_width: u32, window_height: u32, bound: c.fz_rect) void {
     var scale: f32 = 0;
-    // Spread reads as a continuous flow: fill the column width and scroll.
-    if (self.width_mode or self.spread) {
+    // Width-fit (spread/width-mode/fit-width) fills the column/window width and
+    // scrolls vertically; otherwise fit the whole page.
+    if (self.width_mode or self.spread or self.fit_width) {
         scale = @as(f32, @floatFromInt(window_width)) / bound.x1;
     } else {
         scale = @min(
@@ -217,13 +223,18 @@ fn calculateZoomLevel(self: *Self, window_width: u32, window_height: u32, bound:
         );
     }
 
-    // initial zoom
-    if (self.default_zoom == 0) {
+    if (self.fit_width) {
+        // Locked: always track the current window/crop, ignoring saved/manual zoom.
         self.default_zoom = scale * self.config.general.size;
-    }
-
-    if (self.active_zoom == 0) {
         self.active_zoom = self.default_zoom;
+    } else {
+        // initial zoom
+        if (self.default_zoom == 0) {
+            self.default_zoom = scale * self.config.general.size;
+        }
+        if (self.active_zoom == 0) {
+            self.active_zoom = self.default_zoom;
+        }
     }
 
     self.active_zoom = @max(self.active_zoom, self.config.general.zoom_min);
@@ -506,12 +517,14 @@ pub fn clampScrollX(self: *Self, viewport_w: u32) void {
 }
 
 pub fn zoomIn(self: *Self) void {
+    self.fit_width = false; // manual zoom exits the locked fit
     const old_zoom = self.active_zoom;
     self.active_zoom *= self.config.general.zoom_step;
     self.rescaleScroll(old_zoom);
 }
 
 pub fn zoomOut(self: *Self) void {
+    self.fit_width = false;
     const old_zoom = self.active_zoom;
     self.active_zoom /= self.config.general.zoom_step;
     self.rescaleScroll(old_zoom);
@@ -525,6 +538,7 @@ fn rescaleScroll(self: *Self, old_zoom: f32) void {
 }
 
 pub fn setZoom(self: *Self, percent: f32) void {
+    self.fit_width = false;
     var dpi = self.config.general.dpi;
     if (self.config.general.detect_dpi) dpi = Utilities.getDPI() orelse dpi;
 
@@ -552,6 +566,24 @@ pub fn toggleWidthMode(self: *Self) void {
     self.width_mode = !self.width_mode;
     self.pix_scroll_x = 0;
     self.pix_scroll_y = 0;
+}
+
+pub fn getFitWidth(self: *Self) bool {
+    return self.fit_width;
+}
+
+pub fn setFitWidth(self: *Self, on: bool) void {
+    self.fit_width = on;
+    if (on) {
+        // Force a fresh fit on the next render.
+        self.default_zoom = 0;
+        self.active_zoom = 0;
+        self.pix_scroll_x = 0;
+    }
+}
+
+pub fn toggleFitWidth(self: *Self) void {
+    self.setFitWidth(!self.fit_width);
 }
 
 pub fn getSpread(self: *Self) bool {

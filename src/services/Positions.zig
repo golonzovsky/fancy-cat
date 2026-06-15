@@ -12,6 +12,7 @@ pub const Position = struct {
     crop: bool = false,
     hlock: bool = false,
     spread: bool = false,
+    fit_width: bool = false,
     crop_left: f32 = 0,
     crop_right: f32 = 0,
     crop_top: f32 = 0,

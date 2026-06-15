@@ -18,6 +18,7 @@ const bindings = .{
     .{ "zoom_in", zoomIn },
     .{ "zoom_out", zoomOut },
     .{ "width_mode", toggleWidthMode },
+    .{ "fit_width", toggleFitWidth },
     .{ "crop_to_content", toggleCrop },
     .{ "toggle_spread", toggleSpread },
     .{ "full_screen", toggleStatusBar },
@@ -89,6 +90,12 @@ fn zoomOut(ctx: *Context) void {
 
 fn toggleWidthMode(ctx: *Context) void {
     ctx.document_handler.toggleWidthMode();
+    ctx.reload_page = true;
+}
+
+fn toggleFitWidth(ctx: *Context) void {
+    ctx.document_handler.toggleFitWidth();
+    ctx.clearCache();
     ctx.reload_page = true;
 }
 

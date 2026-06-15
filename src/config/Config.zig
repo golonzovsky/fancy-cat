@@ -14,6 +14,7 @@ pub const KeyMap = struct {
     zoom_in: vaxis.Key = .{ .codepoint = 'i' },
     zoom_out: vaxis.Key = .{ .codepoint = 'o' },
     width_mode: vaxis.Key = .{ .codepoint = 'w' },
+    fit_width: vaxis.Key = .{ .codepoint = 'W' },
     crop_to_content: vaxis.Key = .{ .codepoint = 't' },
     toggle_spread: vaxis.Key = .{ .codepoint = 'd' },
     hint_mode: vaxis.Key = .{ .codepoint = ';' },
@@ -74,9 +75,8 @@ pub const General = struct {
     // size of the pdf
     // 1 is the whole window
     size: f32 = 1.0,
-    // multiplicative per i/o keystroke; 1.125 ≈ 12.5% step (about half the
-    // perceived jump of the old 1.25 / 25% step). Override in config for coarser.
-    zoom_step: f32 = 1.125,
+    // multiplicative per i/o keystroke; 1.1 = 10% step. Override in config for coarser.
+    zoom_step: f32 = 1.1,
     zoom_min: f32 = 1.0,
     // pixels
     scroll_step: f32 = 100.0,

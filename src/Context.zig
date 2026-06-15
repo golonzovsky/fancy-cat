@@ -155,6 +155,9 @@ pub const Context = struct {
             }
             if (pos.zoom > 0) document_handler.setActiveZoom(pos.zoom);
             document_handler.setOddShiftX(pos.odd_shift_x);
+            // Last: when locked to fit-width, the zoom is recomputed at render
+            // regardless of the restored value above.
+            if (pos.fit_width) document_handler.setFitWidth(true);
         }
         const restored_hlock: bool = if (positions.getSavedPosition()) |p| p.hlock else false;
         var marks = positions.loadMarks(allocator);
@@ -265,6 +268,7 @@ pub const Context = struct {
             .crop = self.document_handler.getCropToContent(),
             .hlock = self.lock_horizontal_scroll,
             .spread = self.document_handler.getSpread(),
+            .fit_width = self.document_handler.getFitWidth(),
             .crop_left = self.document_handler.crop_left,
             .crop_right = self.document_handler.crop_right,
             .crop_top = self.document_handler.crop_top,
@@ -744,11 +748,10 @@ pub const Context = struct {
         self.last_viewport_h_pix = viewport_h_pix;
 
         // In spread mode the strip flows through two columns; pages render at
-        // column width (minus a 1-cell margin per side) and may straddle the
-        // column break.
+        // full column width (flush — no gutter) and may straddle the column break.
         const columns: u16 = if (self.document_handler.getSpread()) 2 else 1;
         const col_cells: u16 = win.width / columns;
-        const render_cells: u16 = if (columns > 1) col_cells -| 2 else win.width;
+        const render_cells: u16 = col_cells;
         const render_w_pix: u32 = @as(u32, render_cells) * @as(u32, pix_per_col);
 
         if (self.current_mode == .marks or self.current_mode == .toc or self.current_mode == .help or self.current_mode == .search_list or self.current_mode == .highlights) return;
