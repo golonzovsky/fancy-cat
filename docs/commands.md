@@ -16,6 +16,8 @@ current list; it is generated from the same table that dispatches these commands
 - `:oddx <number>` — shift odd pages horizontally by N PDF points (for asymmetric inner margins)
 - `:hlock` — toggle horizontal scroll lock (trackpad reading mode)
 - `:spread` — toggle the two-column continuous spread
+- `:fit` — toggle fit-width lock (zoom tracks the cropped page width, or two
+  pages in spread); also bound to `W`. A manual zoom releases it
 - `:crop [T [R [B [L]]]]` — trim margins in PDF points, CSS-shorthand value rules;
   bare `:crop` resets the trim
 - `:help` — help popup
@@ -30,9 +32,9 @@ non-obvious ones:
   the full match list; Esc clears highlights
 - mouse drag selects text and copies it on release (OSC 52); `H` persists the
   selection as a highlight; `V` opens the highlights navigator
-- `j`/`k` scroll a step; `Ctrl+D`/`Ctrl+U` scroll half a page with a short
-  smooth animation
-- `i`/`o` zoom in/out (default step ~12.5% per press; set `general.zoom_step` to
+- `j`/`k` scroll a step and wheel/trackpad scrolls; `Ctrl+D`/`Ctrl+U` scroll
+  half a page with a short smooth animation
+- `i`/`o` zoom in/out (default step 10% per press; set `general.zoom_step` to
   change, e.g. `1.25` for the old coarser feel)
 - `t` auto-crop, `d` spread, `T` table of contents, `M` marks, `;` link hints,
   `m<a-z>`/`'<a-z>` set/jump mark, `Ctrl+O`/`Tab` jump back/forward,

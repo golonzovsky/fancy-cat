@@ -142,6 +142,7 @@ pub const StatusBar = struct {
     pub const PAGE = "<page>";
     pub const TOTAL_PAGES = "<total_pages>";
     pub const HLOCK = "<hlock>";
+    pub const FIT = "<fit>";
     pub const ODDX = "<oddx>";
     pub const CROP = "<crop>";
     pub const CHAPTER = "<chapter>";
@@ -168,6 +169,7 @@ pub const StatusBar = struct {
         .{ .styled = .{ .text = SEARCH, .style = default_style } },
         .{ .styled = .{ .text = CROP, .style = default_style } },
         .{ .styled = .{ .text = ODDX, .style = default_style } },
+        .{ .styled = .{ .text = FIT, .style = default_style } },
         .{ .styled = .{ .text = HLOCK, .style = default_style } },
         .{ .styled = .{ .text = PAGE, .style = default_style } },
         .{ .styled = .{ .text = ":", .style = default_style } },

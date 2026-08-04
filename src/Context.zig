@@ -345,6 +345,7 @@ pub const Context = struct {
         try loop.start();
         defer loop.stop();
         try self.vx.enterAltScreen(self.tty.writer());
+        try self.vx.setTitle(self.tty.writer(), std.fs.path.stem(self.doc_abs_path));
         try self.vx.queryTerminal(self.tty.writer(), std.Io.Duration.fromSeconds(1));
         try self.vx.setMouseMode(self.tty.writer(), true);
 
@@ -1653,6 +1654,8 @@ pub const Context = struct {
             text = "";
         } else if (std.mem.eql(u8, text, Config.StatusBar.HLOCK)) {
             text = if (self.lock_horizontal_scroll) " HLOCK " else "";
+        } else if (std.mem.eql(u8, text, Config.StatusBar.FIT)) {
+            text = if (self.document_handler.getFitWidth()) " FIT " else "";
         } else if (std.mem.eql(u8, text, Config.StatusBar.ODDX)) {
             const oddx = self.document_handler.getOddShiftX();
             text = if (oddx != 0)
