@@ -20,6 +20,7 @@ const bindings = .{
     .{ "width_mode", toggleWidthMode },
     .{ "fit_width", toggleFitWidth },
     .{ "crop_to_content", toggleCrop },
+    .{ "crop_mode", enterCropMode },
     .{ "toggle_spread", toggleSpread },
     .{ "full_screen", toggleStatusBar },
     .{ "scroll_up", scrollUp },
@@ -150,6 +151,10 @@ fn enterCommand(ctx: *Context) void {
 
 fn enterHints(ctx: *Context) void {
     ctx.changeMode(.hint);
+}
+
+fn enterCropMode(ctx: *Context) void {
+    ctx.changeMode(.crop);
 }
 
 fn enterToc(ctx: *Context) void {

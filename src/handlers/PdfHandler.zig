@@ -622,6 +622,19 @@ pub fn cropInfo(self: *Self) ?CropInfo {
     return null;
 }
 
+pub const PageBound = struct { x0: f32, y0: f32, x1: f32, y1: f32 };
+
+// Raw (uncropped) page box in PDF points.
+pub fn getPageBound(self: *Self, page_number: u16) PageBound {
+    self.render_mutex.lockUncancelable(self.io);
+    defer self.render_mutex.unlock(self.io);
+    const page = c.fz_load_page_z(self.ctx, self.doc, @as(c_int, @intCast(page_number))) orelse
+        return .{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 };
+    defer c.fz_drop_page(self.ctx, page);
+    const b = c.fz_bound_page(self.ctx, page);
+    return .{ .x0 = b.x0, .y0 = b.y0, .x1 = b.x1, .y1 = b.y1 };
+}
+
 pub fn setMarginCrop(self: *Self, left: f32, right: f32, top: f32, bottom: f32) void {
     self.crop_left = left;
     self.crop_right = right;

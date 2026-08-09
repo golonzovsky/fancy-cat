@@ -9,6 +9,7 @@ const HelpMode = @import("modes/HelpMode.zig");
 const SearchMode = @import("modes/SearchMode.zig");
 const SearchListMode = @import("modes/SearchListMode.zig");
 const HighlightsMode = @import("modes/HighlightsMode.zig");
+const CropMode = @import("modes/CropMode.zig");
 const fzwatch = @import("fzwatch");
 const Config = @import("config/Config.zig");
 const PdfHandler = @import("handlers/PdfHandler.zig");
@@ -28,8 +29,8 @@ pub const Event = union(enum) {
     prerender_ready,
 };
 
-pub const ModeType = enum { view, command, hint, marks, toc, help, search, search_list, highlights };
-pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode, toc: TocMode, help: HelpMode, search: SearchMode, search_list: SearchListMode, highlights: HighlightsMode };
+pub const ModeType = enum { view, command, hint, marks, toc, help, search, search_list, highlights, crop };
+pub const Mode = union(ModeType) { view: ViewMode, command: CommandMode, hint: HintMode, marks: MarksMode, toc: TocMode, help: HelpMode, search: SearchMode, search_list: SearchListMode, highlights: HighlightsMode, crop: CropMode };
 pub const ReloadIndicatorState = enum { idle, reload, watching };
 
 pub const VisiblePage = struct {
@@ -279,6 +280,9 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // Before saveState: a mode's deinit may restore document state it
+        // borrowed (e.g. crop mode zeroes the margins while active).
+        self.deinitCurrentMode();
         self.saveState();
         for (self.marks.items) |m| {
             if (m.comment.len > 0) self.allocator.free(m.comment);
@@ -300,7 +304,6 @@ pub const Context = struct {
         self.allocator.free(self.doc_abs_path);
         self.jump_back.deinit(self.allocator);
         self.jump_forward.deinit(self.allocator);
-        self.deinitCurrentMode();
         if (self.watcher) |*w| {
             w.stop();
             if (self.watcher_thread) |thread| thread.join();
@@ -489,6 +492,10 @@ pub const Context = struct {
                 }
                 if (self.current_mode == .highlights) {
                     self.current_mode.highlights.handleMouse(mouse);
+                    return;
+                }
+                if (self.current_mode == .crop) {
+                    self.current_mode.crop.handleMouse(mouse);
                     return;
                 }
                 if (self.current_mode == .view) {
@@ -861,7 +868,7 @@ pub const Context = struct {
                         .height = @intCast(visible_h),
                     },
                     .size = .{ .cols = dest_cols, .rows = dest_rows },
-                    .z_index = if (self.current_mode == .hint or self.current_mode == .marks) -1 else null,
+                    .z_index = if (self.current_mode == .hint or self.current_mode == .marks or self.current_mode == .crop) -1 else null,
                 });
 
                 if (self.visible_pages_len < self.visible_pages.len) {
@@ -896,7 +903,7 @@ pub const Context = struct {
     }
 
     // Maps a mouse cell position to the page and raw PDF coordinates under it.
-    fn pdfPointAt(self: *Self, mouse: vaxis.Mouse) ?PagePoint {
+    pub fn pdfPointAt(self: *Self, mouse: vaxis.Mouse) ?PagePoint {
         // Coordinates are negative when the event is outside our pane (e.g.
         // clicking another terminal split).
         if (mouse.col < 0 or mouse.row < 0) return null;
@@ -1717,6 +1724,7 @@ pub const Context = struct {
         if (self.current_mode == .help) self.current_mode.help.draw(win);
         if (self.current_mode == .search_list) self.current_mode.search_list.draw(win);
         if (self.current_mode == .highlights) self.current_mode.highlights.draw(win);
+        if (self.current_mode == .crop) self.current_mode.crop.draw(win);
     }
 
     pub fn toggleFullScreen(self: *Self) void {

@@ -16,6 +16,7 @@ pub const KeyMap = struct {
     width_mode: vaxis.Key = .{ .codepoint = 'w' },
     fit_width: vaxis.Key = .{ .codepoint = 'W' },
     crop_to_content: vaxis.Key = .{ .codepoint = 't' },
+    crop_mode: vaxis.Key = .{ .codepoint = 'c' },
     toggle_spread: vaxis.Key = .{ .codepoint = 'd' },
     hint_mode: vaxis.Key = .{ .codepoint = ';' },
     set_mark: vaxis.Key = .{ .codepoint = 'm' },

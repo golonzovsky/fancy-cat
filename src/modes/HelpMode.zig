@@ -102,6 +102,7 @@ fn buildKeyLines(self: *Self, a: std.mem.Allocator) []const Line {
     add(a, &lines, .{ .keys = fmtKey(a, km.width_mode), .label = "fit width (once)" });
     add(a, &lines, .{ .keys = fmtKey(a, km.fit_width), .label = "fit width (lock)" });
     add(a, &lines, .{ .keys = fmtKey(a, km.crop_to_content), .label = "crop to content" });
+    add(a, &lines, .{ .keys = fmtKey(a, km.crop_mode), .label = "crop interactively" });
     add(a, &lines, .{ .keys = fmtKey(a, km.toggle_spread), .label = "2-column spread" });
     add(a, &lines, .{ .keys = fmtKey(a, km.full_screen), .label = "toggle status bar" });
     add(a, &lines, .{ .keys = fmtKey(a, km.colorize), .label = "toggle invert" });
