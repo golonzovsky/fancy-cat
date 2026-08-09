@@ -45,6 +45,11 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
         return;
     }
 
+    if (key.matches(km.complete_command.codepoint, km.complete_command.mods)) {
+        try self.completeCommand();
+        return;
+    }
+
     // History
     if (key.matches(km.history_back.codepoint, km.history_back.mods) or key.matches(km.history_forward.codepoint, km.history_forward.mods)) {
         if (self.history_prefix == null) {
@@ -138,6 +143,48 @@ pub fn executeCommand(self: *Self, cmd: []const u8) void {
     inline for (commands) |entry| {
         if (entry[0](self, cmd)) return;
     }
+}
+
+const Completion = struct { name: []const u8, takes_arg: bool };
+
+// Completable names derived from the usage column of `commands`: the leading
+// lowercase word after ':' (numeric/axis forms like :N or :y+N have none).
+const completions: []const Completion = blk: {
+    var list: []const Completion = &.{};
+    var i: usize = 0;
+    while (i < commands.len) : (i += 1) {
+        const usage = commands[i][1];
+        var end: usize = 1;
+        while (end < usage.len and std.ascii.isLower(usage[end])) end += 1;
+        if (end == 1 or (end < usage.len and usage[end] != ' ')) continue;
+        list = list ++ &[_]Completion{.{ .name = usage[1..end], .takes_arg = end < usage.len }};
+    }
+    break :blk list;
+};
+
+// Longest-common-prefix completion; a unique match taking arguments gets a trailing space.
+fn completeCommand(self: *Self) !void {
+    if (self.text_input.buf.secondHalf().len != 0) return;
+    const typed = self.text_input.buf.firstHalf();
+    if (typed.len == 0 or std.mem.indexOfScalar(u8, typed, ' ') != null) return;
+
+    var count: usize = 0;
+    var prefix: []const u8 = "";
+    var takes_arg = false;
+    for (completions) |c| {
+        if (!std.mem.startsWith(u8, c.name, typed)) continue;
+        count += 1;
+        if (count == 1) {
+            prefix = c.name;
+            takes_arg = c.takes_arg;
+        } else {
+            prefix = prefix[0 .. std.mem.indexOfDiff(u8, prefix, c.name) orelse prefix.len];
+        }
+    }
+    if (count == 0) return;
+    const suffix = prefix[typed.len..];
+    try self.text_input.insertSliceAtCursor(suffix);
+    if (count == 1 and takes_arg) try self.text_input.insertSliceAtCursor(" ");
 }
 
 fn handleMarks(self: *Self, cmd: []const u8) bool {

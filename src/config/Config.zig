@@ -28,6 +28,7 @@ pub const KeyMap = struct {
     enter_command_mode: vaxis.Key = .{ .codepoint = ':' },
     exit_command_mode: vaxis.Key = .{ .codepoint = vaxis.Key.escape },
     execute_command: vaxis.Key = .{ .codepoint = vaxis.Key.enter },
+    complete_command: vaxis.Key = .{ .codepoint = vaxis.Key.tab },
     history_back: vaxis.Key = .{ .codepoint = vaxis.Key.up },
     history_forward: vaxis.Key = .{ .codepoint = vaxis.Key.down },
     jump_back: vaxis.Key = .{ .codepoint = 'o', .mods = .{ .ctrl = true } },
