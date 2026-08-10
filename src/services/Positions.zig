@@ -262,12 +262,21 @@ pub fn save(self: *Self, pos: Position, marks: []const Mark, highlights: []const
     defer arena.deinit();
     const a = arena.allocator();
 
+    // Merge with the file as it is NOW, not the init-time snapshot: other
+    // instances may have saved entries since this one started, and rewriting
+    // from the snapshot would erase their books from the recent list.
     var root = std.json.ObjectMap.empty;
-    if (self.have_data) {
-        var it = self.all.value.object.iterator();
-        while (it.next()) |kv| {
-            if (std.mem.eql(u8, kv.key_ptr.*, self.doc_path)) continue;
-            root.put(a, kv.key_ptr.*, kv.value_ptr.*) catch return;
+    if (cwd.readFileAlloc(self.io, self.file_path, a, .limited(1024 * 1024)) catch null) |content| {
+        const val = std.json.parseFromSliceLeaky(std.json.Value, a, content, .{}) catch std.json.Value.null;
+        if (val == .object) {
+            var it = val.object.iterator();
+            while (it.next()) |kv| {
+                if (std.mem.eql(u8, kv.key_ptr.*, self.doc_path)) continue;
+                // Drop this doc's legacy path-keyed entry; it lives under the
+                // canonical key from here on.
+                if (pos.path.len > 0 and std.mem.eql(u8, kv.key_ptr.*, pos.path)) continue;
+                root.put(a, kv.key_ptr.*, kv.value_ptr.*) catch return;
+            }
         }
     }
 
