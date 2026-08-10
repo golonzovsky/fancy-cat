@@ -113,6 +113,24 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
         if (self.cursor + 1 < self.visible.items.len) self.cursor += 1;
         return;
     }
+    if (key.matches(km.scroll_half_down.codepoint, km.scroll_half_down.mods)) {
+        const step: usize = @max(1, self.context.vx.window().height / 2);
+        self.context.animateListCursor(&self.cursor, @min(self.cursor + step, self.visible.items.len - 1));
+        return;
+    }
+    if (key.matches(km.scroll_half_up.codepoint, km.scroll_half_up.mods)) {
+        const step: usize = @max(1, self.context.vx.window().height / 2);
+        self.context.animateListCursor(&self.cursor, self.cursor -| step);
+        return;
+    }
+    if (key.matches('L', .{})) {
+        self.expandAll();
+        return;
+    }
+    if (key.matches('H', .{})) {
+        self.collapseAll();
+        return;
+    }
     if (key.matches('g', .{})) {
         self.cursor = 0;
         return;
@@ -195,6 +213,28 @@ fn collapseCurrent(self: *Self) void {
     self.refindCursor(idx);
 }
 
+fn expandAll(self: *Self) void {
+    const cur: ?usize = if (self.cursor < self.visible.items.len) self.visible.items[self.cursor] else null;
+    for (self.entries, 0..) |_, i| {
+        if (self.hasChildren(i)) self.expanded.put(i, {}) catch {};
+    }
+    self.rebuildVisible() catch {};
+    if (cur) |idx| self.refindCursor(idx);
+}
+
+fn collapseAll(self: *Self) void {
+    const cur: ?usize = if (self.cursor < self.visible.items.len) self.visible.items[self.cursor] else null;
+    self.expanded.clearRetainingCapacity();
+    self.rebuildVisible() catch {};
+    if (cur) |start_idx| {
+        // Pre-order outline: the nearest preceding depth-0 entry is the
+        // top-level ancestor, which is still visible after the collapse.
+        var i = start_idx;
+        while (i > 0 and self.entries[i].depth > 0) i -= 1;
+        self.refindCursor(i);
+    }
+}
+
 fn toggleCurrent(self: *Self) void {
     if (self.cursor >= self.visible.items.len) return;
     const idx = self.visible.items[self.cursor];
@@ -233,7 +273,7 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     const popup = win.child(.{ .x_off = x_off, .y_off = y_off, .width = w, .height = h });
 
     _ = popup.print(
-        &.{.{ .text = " Table of Contents (Enter: jump, h/l: fold, e: editor, Esc: close) ", .style = title_style }},
+        &.{.{ .text = " Table of Contents (Enter: jump, h/l: fold, H/L: fold all, e: editor, Esc: close) ", .style = title_style }},
         .{ .row_offset = 0, .col_offset = 0 },
     );
 

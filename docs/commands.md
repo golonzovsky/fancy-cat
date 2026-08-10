@@ -35,7 +35,8 @@ non-obvious ones:
 - mouse drag selects text and copies it on release (OSC 52); `H` persists the
   selection as a highlight; `V` opens the highlights navigator
 - `j`/`k` scroll a step and wheel/trackpad scrolls; `Ctrl+D`/`Ctrl+U` scroll
-  half a page with a short smooth animation
+  half a page with a short smooth animation (in the TOC and the marks / search /
+  highlights popups they jump the list half a screen)
 - `i`/`o` zoom in/out (default step 10% per press; set `general.zoom_step` to
   change, e.g. `1.25` for the old coarser feel)
 - `c` interactive crop: drag the four crop lines with the mouse (cropped parts

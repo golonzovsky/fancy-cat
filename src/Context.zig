@@ -457,6 +457,25 @@ pub const Context = struct {
         try buffered.flush();
     }
 
+    // Half-page jump for list popups, with the same ease-out feel as
+    // smoothScrollHalf: `cursor` points at the mode's cursor field and is
+    // stepped along the eased path with a redraw per frame.
+    pub fn animateListCursor(self: *Self, cursor: *usize, target: usize) void {
+        if (target == cursor.*) return;
+        const frames: usize = 10;
+        const frame_ns: u64 = 11 * std.time.ns_per_ms;
+        const start: f32 = @floatFromInt(cursor.*);
+        const delta: f32 = @as(f32, @floatFromInt(target)) - start;
+        var i: usize = 1;
+        while (i <= frames) : (i += 1) {
+            const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(frames));
+            const eased = 1.0 - std.math.pow(f32, 1.0 - t, 3.0);
+            cursor.* = @intFromFloat(@round(start + delta * eased));
+            self.renderFrame() catch return;
+            if (i < frames) time.sleep(frame_ns);
+        }
+    }
+
     pub fn handleKeyStroke(self: *Self, key: vaxis.Key) !void {
         const km = self.config.key_map;
 
