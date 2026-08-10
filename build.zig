@@ -147,7 +147,6 @@ pub fn build(b: *std.Build) void {
 
     exe_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/src/mupdf-z", .{root}) });
     exe_mod.addCSourceFile(.{ .file = .{ .cwd_relative = b.fmt("{s}/src/mupdf-z/fitz-z.c", .{root}) } });
-    exe_mod.addCSourceFile(.{ .file = .{ .cwd_relative = b.fmt("{s}/src/mupdf-z/dpi-z.c", .{root}) } });
 
     const run_cmd = b.addRunArtifact(exe);
     if (b.args) |args| run_cmd.addArgs(args);
