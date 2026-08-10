@@ -125,10 +125,6 @@ pub fn build(b: *std.Build) void {
 
     const fzwatch_mod = deps.fzwatch.module("fzwatch");
     if (target.result.os.tag == .macos) {
-        // Shadow CoreServices/CoreServices.h with a minimal shim so fzwatch's
-        // `@cImport` translates under Zig 0.16's Aro frontend, which can't
-        // parse the real SDK umbrella's Objective-C block syntax.
-        fzwatch_mod.addIncludePath(b.path("compat/fzwatch-macos"));
         fzwatch_mod.linkFramework("CoreServices", .{});
         fzwatch_mod.link_libc = true;
     }

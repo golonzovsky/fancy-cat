@@ -47,7 +47,7 @@ This is a fork of [freref/fancy-cat](https://github.com/freref/fancy-cat) with t
 - **Build artifacts moved out of the submodule** — mupdf installs to `mupdf-out/` at the project root (gitignored) instead of dirtying `deps/mupdf/local/`.
 - **Migrated to Zig 0.16** — including a `build.zig` step that auto-rewrites mupdf's `context.h` ref-count inlines (`++*refs` forms), which Zig 0.16's translate-c otherwise rejects; a fresh clone builds with plain `zig build`.
 
-Misc smaller fixes: `f` (full screen) preserves active zoom and scroll instead of resetting; horizontal scroll preserved across page transitions; cache always consulted (the old `should_check_cache` one-shot gate is gone); position saves merge with the live `positions.json` instead of a startup snapshot, so concurrently open books no longer wipe each other from the recent-files list.
+Misc smaller fixes: `f` (full screen) preserves active zoom and scroll instead of resetting; horizontal scroll preserved across page transitions; cache always consulted (the old `should_check_cache` one-shot gate is gone).
 
 ## Usage
 
