@@ -167,19 +167,19 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
         if (m.comment.len > 0) {
             _ = popup.print(
                 &.{.{ .text = m.comment, .style = style }},
-                .{ .row_offset = row, .col_offset = main_col },
+                .{ .row_offset = row, .col_offset = main_col, .wrap = .none },
             );
             if (section.len > 0) {
                 const sep = std.fmt.allocPrint(a, "  - {s}", .{section}) catch section;
                 _ = popup.print(
                     &.{.{ .text = sep, .style = if (i == self.cursor) sel else dim }},
-                    .{ .row_offset = row, .col_offset = @intCast(@min(@as(usize, main_col) + m.comment.len, w)) },
+                    .{ .row_offset = row, .col_offset = @intCast(@min(@as(usize, main_col) + m.comment.len, w)), .wrap = .none },
                 );
             }
         } else if (section.len > 0) {
             _ = popup.print(
                 &.{.{ .text = section, .style = if (i == self.cursor) sel else dim }},
-                .{ .row_offset = row, .col_offset = main_col },
+                .{ .row_offset = row, .col_offset = main_col, .wrap = .none },
             );
         }
     }

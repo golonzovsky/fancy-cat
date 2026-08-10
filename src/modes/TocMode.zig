@@ -274,7 +274,7 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
 
     _ = popup.print(
         &.{.{ .text = " Table of Contents (Enter: jump, h/l: fold, H/L: fold all, e: editor, Esc: close) ", .style = title_style }},
-        .{ .row_offset = 0, .col_offset = 0 },
+        .{ .row_offset = 0, .col_offset = 0, .wrap = .none },
     );
 
     if (self.visible.items.len == 0) {
@@ -313,7 +313,7 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
         const row: u16 = @intCast(2 + i);
         _ = popup.print(
             &.{.{ .text = line, .style = style }},
-            .{ .row_offset = row, .col_offset = 1 },
+            .{ .row_offset = row, .col_offset = 1, .wrap = .none },
         );
     }
 }
