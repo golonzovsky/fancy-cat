@@ -34,6 +34,26 @@ fn addMupdfDynamic(mod: *std.Build.Module, target: std.Target) void {
     mod.link_libc = true;
 }
 
+// Zig 0.16's Aro translate-c rejects the `++*refs` / `drop = --*refs == 0`
+// forms in mupdf's ref-count inlines ("invalid left-hand side to assignment"
+// in the cImport). Rewrite them to equivalents it accepts. Idempotent, and
+// only writes when something changed so mupdf isn't rebuilt every run.
+fn patchMupdfContextH(b: *std.Build) void {
+    const io = b.graph.io;
+    const path = "deps/mupdf/include/mupdf/fitz/context.h";
+    const a = b.allocator;
+    const src = b.build_root.handle.readFileAlloc(io, path, a, .limited(4 * 1024 * 1024)) catch return;
+    var out = std.mem.replaceOwned(u8, a, src, "++*refs;", "*refs += 1;") catch return;
+    out = std.mem.replaceOwned(u8, a, out, "drop = --*refs == 0;", "*refs -= 1; drop = *refs == 0;") catch return;
+    if (std.mem.eql(u8, out, src)) return;
+    var f = b.build_root.handle.createFile(io, path, .{}) catch return;
+    defer f.close(io);
+    var buf: [4096]u8 = undefined;
+    var fw = f.writer(io, &buf);
+    fw.interface.writeAll(out) catch {};
+    fw.interface.flush() catch {};
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -51,6 +71,8 @@ pub fn build(b: *std.Build) void {
             return;
         }
     };
+    if (useVendorMupdf) patchMupdfContextH(b);
+
     const allocator = std.heap.page_allocator;
     var make_args: std.ArrayList([]const u8) = .empty;
     defer make_args.deinit(allocator);

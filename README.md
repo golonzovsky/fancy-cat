@@ -28,6 +28,7 @@ This is a fork of [freref/fancy-cat](https://github.com/freref/fancy-cat) with t
 - **Fit-width lock** (`W` or `:fit`) — locks zoom so the *cropped* page width exactly fills the window (or, in spread, the column width = two pages), recomputed on every render so it tracks window resizes and crop changes. A manual zoom (`i`/`o`, `:N%`) releases the lock. Shown as ` FIT ` in the status bar and persisted per document.
 - **Auto-crop margins** (`t`) — computes a document-stable text bounding box (samples ~48 pages, trims outliers per edge) so every page shares one crop box; pages without text fall back to the drawn-content bbox.
 - **Manual margin crop** (`:crop T R B L`) — trims margins in PDF points with CSS-shorthand value rules (1/2/3/4 values); applied after the odd-page offset; current values shown in the status bar; bare `:crop` resets.
+- **Interactive crop mode** (`c`) — adjust the crop with the mouse directly on the page: four draggable lines per visible page, to-be-cropped regions dimmed, click grabs the nearest line. Each page shows its own lines, so "is that gap the bottom margin of this page or the top of the next" answers itself. Wheel still scrolls; live `T R B L` readout in the status bar; `Enter` (or `c`) applies as manual margins, `Esc` cancels. Entering with a crop active — auto-crop included — shows the full page with the lines seeded from it, so `t` → `c` → tweak turns the auto box into explicit margins.
 - **Odd-page horizontal alignment** (`:oddx N`) — for books with asymmetric inner margins. Shift is baked into the mupdf CTM during render, so no display gap appears.
 - **Background prerendering** — a worker thread renders the adjacent pages ahead of time so page crossings hit the cache instead of stalling on a render.
 - **Fast image transfer** — pages are encoded as PNG (10–40× smaller than raw RGB) and handed to the terminal as a temp file via the kitty graphics `t=t` medium, so only a file path crosses the tty; falls back to streamed base64 PNG over SSH.
@@ -39,12 +40,14 @@ This is a fork of [freref/fancy-cat](https://github.com/freref/fancy-cat) with t
 - **Recent-files picker** — running `fancy-cat` with no arguments opens the recently-read list in `fzf` (numbered-prompt fallback when fzf is missing) and restores your exact position.
 - **Chapter & progress in the status bar** — `<chapter>` (deepest outline section at the current page) and `<percent>` placeholders, alongside the existing page/zoom items.
 - **Help popup** (`?` or `:help`) — keybinding chips are rendered from the live keymap (so rebinds show correctly) and the `:` command column is generated from the command dispatch table, so the help can't go stale.
+- **Command completion** — `Tab` in command mode completes `:` command names to the longest common prefix; a unique match that takes arguments gets a trailing space. Completions are derived from the dispatch table at comptime, so they can't go stale either.
+- **Terminal tab title** — set to the book's filename on startup (OSC 2), so terminal tabs are tellable apart.
 - **Open page / chapter in `$EDITOR`** (`e` / `E`, or `:edit` / `:edit c`) — extracts as markdown with bold/italic/mono spans, headings, and inline diagram PNGs (pairs well with [image.nvim](https://github.com/3rd/image.nvim)).
 - **Status / command bar share a row** — image no longer overlaps the status row; in command mode, status is hidden in favor of the command bar.
 - **Build artifacts moved out of the submodule** — mupdf installs to `mupdf-out/` at the project root (gitignored) instead of dirtying `deps/mupdf/local/`.
-- **Migrated to Zig 0.16.**
+- **Migrated to Zig 0.16** — including a `build.zig` step that auto-rewrites mupdf's `context.h` ref-count inlines (`++*refs` forms), which Zig 0.16's translate-c otherwise rejects; a fresh clone builds with plain `zig build`.
 
-Misc smaller fixes: `f` (full screen) preserves active zoom and scroll instead of resetting; horizontal scroll preserved across page transitions; cache always consulted (the old `should_check_cache` one-shot gate is gone).
+Misc smaller fixes: `f` (full screen) preserves active zoom and scroll instead of resetting; horizontal scroll preserved across page transitions; cache always consulted (the old `should_check_cache` one-shot gate is gone); position saves merge with the live `positions.json` instead of a startup snapshot, so concurrently open books no longer wipe each other from the recent-files list.
 
 ## Usage
 
@@ -129,6 +132,7 @@ zig build run -- <path-to-pdf> <optional-page-number>
 - ✅ Text selection → clipboard
 - ✅ Persistent highlights
 - ✅ Two-column spread
+- ✅ Interactive margin crop
 - ✅ Background prerendering
 
 ## License

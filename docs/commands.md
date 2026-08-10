@@ -1,7 +1,9 @@
 # Commands
 
-Press `:` to enter command mode. (The in-app help — `?` or `:help` — always shows the
-current list; it is generated from the same table that dispatches these commands.)
+Press `:` to enter command mode. `Tab` completes command names (longest common
+prefix; a unique match that takes arguments gets a trailing space). (The in-app
+help — `?` or `:help` — always shows the current list; it is generated from the
+same table that dispatches these commands.)
 
 - `:<number>` — go to page number
 - `:<number>%` — set zoom level
@@ -36,6 +38,9 @@ non-obvious ones:
   half a page with a short smooth animation
 - `i`/`o` zoom in/out (default step 10% per press; set `general.zoom_step` to
   change, e.g. `1.25` for the old coarser feel)
+- `c` interactive crop: drag the four crop lines with the mouse (cropped parts
+  dimmed, each visible page shows its own lines), wheel scrolls, `Enter` (or
+  `c`) applies, `Esc` cancels
 - `t` auto-crop, `d` spread, `T` table of contents, `M` marks, `;` link hints,
   `m<a-z>`/`'<a-z>` set/jump mark, `Ctrl+O`/`Tab` jump back/forward,
   `e`/`E` page/chapter in `$EDITOR`
