@@ -124,11 +124,11 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
         return;
     }
     if (key.matches('L', .{})) {
-        self.expandAll();
+        self.expandOneLevel();
         return;
     }
     if (key.matches('H', .{})) {
-        self.collapseAll();
+        self.collapseOneLevel();
         return;
     }
     if (key.matches('g', .{})) {
@@ -213,25 +213,67 @@ fn collapseCurrent(self: *Self) void {
     self.refindCursor(idx);
 }
 
-fn expandAll(self: *Self) void {
+// vim zr: every visible collapsed branch opens one level.
+fn expandOneLevel(self: *Self) void {
     const cur: ?usize = if (self.cursor < self.visible.items.len) self.visible.items[self.cursor] else null;
-    for (self.entries, 0..) |_, i| {
-        if (self.hasChildren(i)) self.expanded.put(i, {}) catch {};
+    var changed = false;
+    for (self.visible.items) |idx| {
+        if (self.hasChildren(idx) and !self.expanded.contains(idx)) {
+            self.expanded.put(idx, {}) catch continue;
+            changed = true;
+        }
     }
+    if (!changed) return;
     self.rebuildVisible() catch {};
     if (cur) |idx| self.refindCursor(idx);
 }
 
-fn collapseAll(self: *Self) void {
+// vim zm: the deepest currently-expanded level folds shut.
+fn collapseOneLevel(self: *Self) void {
     const cur: ?usize = if (self.cursor < self.visible.items.len) self.visible.items[self.cursor] else null;
-    self.expanded.clearRetainingCapacity();
+    var dmax: ?u8 = null;
+    for (self.visible.items) |idx| {
+        if (!self.expanded.contains(idx)) continue;
+        const d = self.entries[idx].depth;
+        if (dmax == null or d > dmax.?) dmax = d;
+    }
+    const target = dmax orelse return;
+    for (self.visible.items) |idx| {
+        if (self.expanded.contains(idx) and self.entries[idx].depth == target) {
+            _ = self.expanded.remove(idx);
+        }
+    }
     self.rebuildVisible() catch {};
-    if (cur) |start_idx| {
-        // Pre-order outline: the nearest preceding depth-0 entry is the
-        // top-level ancestor, which is still visible after the collapse.
-        var i = start_idx;
-        while (i > 0 and self.entries[i].depth > 0) i -= 1;
-        self.refindCursor(i);
+    if (cur) |idx| self.refindCursorOrAncestor(idx);
+}
+
+// Like refindCursor, but when the entry got hidden by a fold, lands on its
+// nearest still-visible ancestor (pre-order outline: nearest preceding
+// shallower entry is the parent).
+fn refindCursorOrAncestor(self: *Self, entry_idx: usize) void {
+    var idx = entry_idx;
+    while (true) {
+        for (self.visible.items, 0..) |v, i| {
+            if (v == idx) {
+                self.cursor = i;
+                return;
+            }
+        }
+        if (idx == 0) break;
+        const d = self.entries[idx].depth;
+        var parent: ?usize = null;
+        var k = idx;
+        while (k > 0) {
+            k -= 1;
+            if (self.entries[k].depth < d) {
+                parent = k;
+                break;
+            }
+        }
+        idx = parent orelse break;
+    }
+    if (self.visible.items.len > 0 and self.cursor >= self.visible.items.len) {
+        self.cursor = self.visible.items.len - 1;
     }
 }
 
@@ -273,7 +315,7 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     const popup = win.child(.{ .x_off = x_off, .y_off = y_off, .width = w, .height = h });
 
     _ = popup.print(
-        &.{.{ .text = " Table of Contents (Enter: jump, h/l: fold, H/L: fold all, e: editor, Esc: close) ", .style = title_style }},
+        &.{.{ .text = " Table of Contents (Enter: jump, h/l: fold, H/L: fold level, e: editor, Esc: close) ", .style = title_style }},
         .{ .row_offset = 0, .col_offset = 0, .wrap = .none },
     );
 
