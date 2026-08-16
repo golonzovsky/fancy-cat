@@ -19,6 +19,13 @@ prev_oddx: i32,
 prev_auto: bool,
 cleared: bool, // init un-cropped the document; deinit must undo that
 applied: bool,
+// Pending offset. Crop mode renders pages unshifted (the handler is held at
+// 0) and presents oddx as the movable ┆ line / border placement instead.
+// The ┆ rides at page center minus oddx so slider and border move together
+// with room to drag both ways; the drag is relative (no snap on press),
+// anchored by grab_dx.
+oddx: i32,
+grab_dx: f32,
 drag: ?Side,
 drag_bound: PdfHandler.PageBound,
 
@@ -35,6 +42,8 @@ pub fn init(context: *Context) Self {
         .prev_auto = dh.getCropToContent(),
         .cleared = false,
         .applied = false,
+        .oddx = dh.getOddShiftX(),
+        .grab_dx = 0,
         .drag = null,
         .drag_bound = undefined,
     };
@@ -53,7 +62,11 @@ pub fn init(context: *Context) Self {
         context.clearCache();
         context.resetCurrentPage();
     }
-    context.progress_text = " crop: drag lines (odd pages: ┆ = offset) · enter apply · esc cancel ";
+    if (self.prev_oddx != 0) {
+        dh.setOddShiftX(0);
+        context.resetCurrentPage();
+    }
+    context.progress_text = " crop: drag lines · ┆ oddx · enter apply · esc cancel ";
     return self;
 }
 
@@ -77,7 +90,9 @@ pub fn deinit(self: *Self) void {
 fn apply(self: *Self) void {
     const dh = &self.context.document_handler;
     self.applied = true;
-    const unchanged = !self.prev_auto and self.left == self.prev[0] and self.right == self.prev[1] and
+    dh.setOddShiftX(self.oddx);
+    const unchanged = !self.prev_auto and self.oddx == self.prev_oddx and
+        self.left == self.prev[0] and self.right == self.prev[1] and
         self.top == self.prev[2] and self.bottom == self.prev[3];
     if (!unchanged or self.cleared) {
         dh.setMarginCrop(self.left, self.right, self.top, self.bottom);
@@ -109,6 +124,9 @@ pub fn handleMouse(self: *Self, mouse: vaxis.Mouse) void {
                 const pt = ctx.pdfPointAt(mouse) orelse return;
                 self.drag_bound = ctx.document_handler.getPageBound(pt.page);
                 self.drag = self.nearestSide(pt);
+                if (self.drag == Side.offset) {
+                    self.grab_dx = pt.x - self.sliderX(self.drag_bound);
+                }
                 self.moveTo(pt);
             },
             else => {},
@@ -126,8 +144,10 @@ pub fn handleMouse(self: *Self, mouse: vaxis.Mouse) void {
 
 // The crop window is fixed in aligned space — odd pages slide under it by
 // oddx (see pageRenderBound/renderPage) — so all x math uses aligned coords.
+// pdfPointAt already removed the handler's current render shift, so aligning
+// means adding the pending offset regardless of view.
 fn alignedX(self: *Self, pt: PagePoint) f32 {
-    if (pt.page % 2 == 1) return pt.x + @as(f32, @floatFromInt(self.context.document_handler.getOddShiftX()));
+    if (pt.page % 2 == 1) return pt.x + @as(f32, @floatFromInt(self.oddx));
     return pt.x;
 }
 
@@ -151,13 +171,21 @@ fn nearestSide(self: *Self, pt: PagePoint) Side {
         side = .bottom;
         best = db;
     }
-    // Odd pages also carry the oddx line; crop lines win ties so a zero
-    // offset at the page edge stays grabbable as the left crop line.
+    // Odd pages also carry the ┆ window slider (drawn clamped into the
+    // page); crop lines win ties so a zero offset at the page edge stays
+    // grabbable as the left crop line.
     if (pt.page % 2 == 1) {
-        const shift: f32 = @floatFromInt(self.context.document_handler.getOddShiftX());
-        if (@abs(ax - (b.x0 + shift)) < best) side = .offset;
+        if (@abs(pt.x - self.sliderX(b)) < best) side = .offset;
     }
     return side;
+}
+
+// Where the ┆ is drawn: page center displaced by the window offset, so it
+// tracks the border 1:1 and always has page room to drag in both directions
+// (oddx is clamped to ±w/2).
+fn sliderX(self: *Self, b: PdfHandler.PageBound) f32 {
+    const s: f32 = @floatFromInt(self.oddx);
+    return std.math.clamp(b.x0 + (b.x1 - b.x0) / 2 - s, b.x0, @max(b.x0, b.x1 - 1));
 }
 
 fn moveTo(self: *Self, pt: PagePoint) void {
@@ -165,20 +193,20 @@ fn moveTo(self: *Self, pt: PagePoint) void {
     const w = b.x1 - b.x0;
     const h = b.y1 - b.y0;
     const ax = self.alignedX(pt);
-    const dh = &self.context.document_handler;
     switch (self.drag orelse return) {
         .left => self.left = std.math.clamp(ax - b.x0, 0, @max(0, w - self.right - min_gap)),
         .right => self.right = std.math.clamp(b.x1 - ax, 0, @max(0, w - self.left - min_gap)),
         .top => self.top = std.math.clamp(pt.y - b.y0, 0, @max(0, h - self.bottom - min_gap)),
         .bottom => self.bottom = std.math.clamp(b.y1 - pt.y, 0, @max(0, h - self.top - min_gap)),
-        // Odd pages re-render as this changes: shift_x is in the cache key,
-        // so the next draw simply misses the cache at the new value.
-        .offset => dh.setOddShiftX(@intFromFloat(@round(std.math.clamp(ax - b.x0, -w / 2, w / 2)))),
+        // Relative drag: slider and border both follow the pointer; the
+        // offset is the negative window displacement. Overlay only; the
+        // handler stays at 0 until apply.
+        .offset => self.oddx = @intFromFloat(@round(std.math.clamp(b.x0 + w / 2 + self.grab_dx - pt.x, -w / 2, w / 2))),
     }
     self.context.progress_text = std.fmt.bufPrint(
         &self.context.progress_buf,
         " crop {d:.0} {d:.0} {d:.0} {d:.0} (TRBL) · oddx {d} · enter apply · esc cancel ",
-        .{ self.top, self.right, self.bottom, self.left, dh.getOddShiftX() },
+        .{ self.top, self.right, self.bottom, self.left, self.oddx },
     ) catch null;
 }
 
@@ -199,17 +227,21 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     else
         .{ .fg = .{ .index = 6 } };
 
+    const s: f32 = @floatFromInt(self.oddx);
+
     for (ctx.visible_pages[0..ctx.visible_pages_len]) |p| {
         const b = dh.getPageBound(p.page_num);
         if (b.x1 <= b.x0 or b.y1 <= b.y0) continue;
+        const odd = p.page_num % 2 == 1;
 
-        // Crop-line positions in viewport pixels (may fall outside this
-        // segment). X is aligned space — no oddx term — so the window sits at
-        // the same column on every page, matching what applying will show.
+        // Pages render unshifted in crop mode, so on odd pages the
+        // aligned-space crop window lands at -s: the border shows exactly
+        // where the cut falls on the raw page.
+        const bs: f32 = if (odd) -s else 0;
         const vx0: f32 = @floatFromInt(p.vp_x_left);
         const vy0: f32 = @floatFromInt(p.vp_y_top);
-        const lx = vx0 + ((b.x0 + self.left) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
-        const rx = vx0 + ((b.x1 - self.right) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
+        const lx = vx0 + ((b.x0 + self.left + bs) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
+        const rx = vx0 + ((b.x1 - self.right + bs) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
         const ty = vy0 + ((b.y0 + self.top) - p.origin_y) * zoom - @as(f32, @floatFromInt(p.clip_y));
         const by = vy0 + ((b.y1 - self.bottom) - p.origin_y) * zoom - @as(f32, @floatFromInt(p.clip_y));
 
@@ -220,11 +252,8 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
         const row_t: i32 = @intFromFloat(@floor(ty / ppr));
         const row_b: i32 = @intFromFloat(@floor((by - 1) / ppr));
 
-        // On odd pages the oddx line marks where the raw page edge currently
-        // sits in aligned space; dragging it edits the offset.
-        const oddx_col: ?i32 = if (p.page_num % 2 == 1) blk: {
-            const shift: f32 = @floatFromInt(dh.getOddShiftX());
-            const ox = vx0 + ((b.x0 + shift) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
+        const oddx_col: ?i32 = if (odd) blk: {
+            const ox = vx0 + (self.sliderX(b) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
             break :blk @intFromFloat(@floor(ox / ppc));
         } else null;
 
