@@ -6,6 +6,10 @@ const PagePoint = @import("../Context.zig").PagePoint;
 const Config = @import("../config/Config.zig");
 const PdfHandler = @import("../handlers/PdfHandler.zig");
 
+pub const occupies_bottom_row = true;
+pub const page_behind_text = true;
+pub const suppress_autosave = true;
+
 const Side = enum { left, right, top, bottom, offset };
 const min_gap: f32 = 24; // pt kept between opposite crop lines
 
@@ -17,7 +21,6 @@ bottom: f32,
 prev: [4]f32, // L R T B at entry, restored on cancel
 prev_oddx: i32,
 prev_auto: bool,
-cleared: bool, // init un-cropped the document; deinit must undo that
 applied: bool,
 // Pending offset. Crop mode renders pages unshifted (the handler is held at
 // 0) and presents oddx as the movable ┆ line / border placement instead.
@@ -31,7 +34,10 @@ grab_dx: f32,
 entry_page: u16,
 entry_pdf_y: f32,
 drag: ?Side,
-drag_bound: PdfHandler.PageBound,
+// Raw page boxes are immutable while the mode is open; cached so draw and
+// mouse events don't take the render mutex per call.
+bound_cache: [8]?struct { page: u16, b: PdfHandler.PageBound },
+bound_next: usize,
 // Backs the status-bar text between frames; screen cells slice into it.
 status_buf: [160]u8,
 
@@ -46,14 +52,14 @@ pub fn init(context: *Context) Self {
         .prev = .{ dh.crop_left, dh.crop_right, dh.crop_top, dh.crop_bottom },
         .prev_oddx = dh.getOddShiftX(),
         .prev_auto = dh.getCropToContent(),
-        .cleared = false,
         .applied = false,
         .oddx = dh.getOddShiftX(),
         .grab_dx = 0,
         .entry_page = dh.getCurrentPageNumber(),
         .entry_pdf_y = 0,
         .drag = null,
-        .drag_bound = undefined,
+        .bound_cache = .{null} ** 8,
+        .bound_next = 0,
         .status_buf = undefined,
     };
     const entry_zoom = dh.getActiveZoom();
@@ -70,8 +76,7 @@ pub fn init(context: *Context) Self {
         self.top = ci.top;
         self.bottom = ci.bottom;
     }
-    self.cleared = self.prev_auto or self.left != 0 or self.right != 0 or self.top != 0 or self.bottom != 0;
-    if (self.cleared) {
+    if (self.hadCrop()) {
         if (self.prev_auto) dh.toggleCropToContent();
         dh.setMarginCrop(0, 0, 0, 0);
         context.clearCache();
@@ -84,10 +89,26 @@ pub fn init(context: *Context) Self {
     return self;
 }
 
+// Whether a crop (manual or auto) was active at entry — init cleared it for
+// the preview, so deinit/apply must reinstate document state either way.
+fn hadCrop(self: *const Self) bool {
+    return self.prev_auto or self.prev[0] != 0 or self.prev[1] != 0 or self.prev[2] != 0 or self.prev[3] != 0;
+}
+
+fn pageBound(self: *Self, page: u16) PdfHandler.PageBound {
+    for (self.bound_cache) |slot| {
+        if (slot) |s| if (s.page == page) return s.b;
+    }
+    const b = self.context.document_handler.getPageBound(page);
+    self.bound_cache[self.bound_next % self.bound_cache.len] = .{ .page = page, .b = b };
+    self.bound_next += 1;
+    return b;
+}
+
 pub fn deinit(self: *Self) void {
     const dh = &self.context.document_handler;
     if (!self.applied) {
-        if (self.cleared) {
+        if (self.hadCrop()) {
             dh.setMarginCrop(self.prev[0], self.prev[1], self.prev[2], self.prev[3]);
             if (self.prev_auto) dh.toggleCropToContent();
             self.context.clearCache();
@@ -99,12 +120,8 @@ pub fn deinit(self: *Self) void {
         }
     }
     // Scrolling inside the preview is never kept: return to where reading was.
-    dh.setCurrentPage(self.entry_page);
-    dh.setScrollY(0);
     dh.setScrollX(0);
-    dh.setPendingScrollPdfY(self.entry_pdf_y);
-    self.context.resetCurrentPage();
-    self.context.progress_text = null;
+    self.context.gotoPagePdfY(self.entry_page, self.entry_pdf_y);
 }
 
 fn apply(self: *Self) void {
@@ -114,7 +131,7 @@ fn apply(self: *Self) void {
     const unchanged = !self.prev_auto and self.oddx == self.prev_oddx and
         self.left == self.prev[0] and self.right == self.prev[1] and
         self.top == self.prev[2] and self.bottom == self.prev[3];
-    if (!unchanged or self.cleared) {
+    if (!unchanged or self.hadCrop()) {
         dh.setMarginCrop(self.left, self.right, self.top, self.bottom);
         self.context.clearCache();
         self.context.resetCurrentPage();
@@ -142,20 +159,17 @@ pub fn handleMouse(self: *Self, mouse: vaxis.Mouse) void {
             .wheel_down => ctx.document_handler.scrollY(-ctx.config.general.scroll_step / 4.0),
             .left => {
                 const pt = ctx.pdfPointAt(mouse) orelse return;
-                self.drag_bound = ctx.document_handler.getPageBound(pt.page);
-                self.drag = self.nearestSide(pt);
-                if (self.drag == Side.offset) {
-                    self.grab_dx = pt.x - self.sliderX(self.drag_bound);
-                }
-                self.moveTo(pt);
+                const b = self.pageBound(pt.page);
+                self.drag = self.nearestSide(pt, b);
+                if (self.drag == Side.offset) self.grab_dx = pt.x - self.sliderX(b);
+                self.moveTo(pt, b);
             },
             else => {},
         },
         .drag => {
             if (mouse.button != .left or self.drag == null) return;
             const pt = ctx.pdfPointAt(mouse) orelse return;
-            self.drag_bound = ctx.document_handler.getPageBound(pt.page);
-            self.moveTo(pt);
+            self.moveTo(pt, self.pageBound(pt.page));
         },
         .release => self.drag = null,
         else => {},
@@ -171,8 +185,7 @@ fn alignedX(self: *Self, pt: PagePoint) f32 {
     return pt.x;
 }
 
-fn nearestSide(self: *Self, pt: PagePoint) Side {
-    const b = self.drag_bound;
+fn nearestSide(self: *Self, pt: PagePoint, b: PdfHandler.PageBound) Side {
     const ax = self.alignedX(pt);
     var side: Side = .left;
     var best = @abs(ax - (b.x0 + self.left));
@@ -208,8 +221,7 @@ fn sliderX(self: *Self, b: PdfHandler.PageBound) f32 {
     return std.math.clamp(b.x0 + (b.x1 - b.x0) / 2 - s, b.x0, @max(b.x0, b.x1 - 1));
 }
 
-fn moveTo(self: *Self, pt: PagePoint) void {
-    const b = self.drag_bound;
+fn moveTo(self: *Self, pt: PagePoint, b: PdfHandler.PageBound) void {
     const w = b.x1 - b.x0;
     const h = b.y1 - b.y0;
     const ax = self.alignedX(pt);
@@ -236,8 +248,7 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     const dim: vaxis.Cell = .{ .char = .{ .grapheme = "░", .width = 1 }, .style = .{ .fg = .{ .index = 8 } } };
     const line_style: vaxis.Cell.Style = .{ .fg = .{ .index = 3 }, .bold = true };
     const drag_style: vaxis.Cell.Style = .{ .fg = .{ .index = 11 }, .bold = true };
-    const offset_active = self.drag != null and self.drag.? == .offset;
-    const offset_style: vaxis.Cell.Style = if (offset_active)
+    const offset_style: vaxis.Cell.Style = if (self.drag == Side.offset)
         .{ .fg = .{ .index = 14 }, .bold = true }
     else
         .{ .fg = .{ .index = 6 } };
@@ -245,7 +256,7 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     const s: f32 = @floatFromInt(self.oddx);
 
     for (ctx.visible_pages[0..ctx.visible_pages_len]) |p| {
-        const b = dh.getPageBound(p.page_num);
+        const b = self.pageBound(p.page_num);
         if (b.x1 <= b.x0 or b.y1 <= b.y0) continue;
         const odd = p.page_num % 2 == 1;
 
@@ -253,12 +264,10 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
         // aligned-space crop window lands at -s: the border shows exactly
         // where the cut falls on the raw page.
         const bs: f32 = if (odd) -s else 0;
-        const vx0: f32 = @floatFromInt(p.vp_x_left);
-        const vy0: f32 = @floatFromInt(p.vp_y_top);
-        const lx = vx0 + ((b.x0 + self.left + bs) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
-        const rx = vx0 + ((b.x1 - self.right + bs) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
-        const ty = vy0 + ((b.y0 + self.top) - p.origin_y) * zoom - @as(f32, @floatFromInt(p.clip_y));
-        const by = vy0 + ((b.y1 - self.bottom) - p.origin_y) * zoom - @as(f32, @floatFromInt(p.clip_y));
+        const lx = p.vpX(b.x0 + self.left + bs, zoom);
+        const rx = p.vpX(b.x1 - self.right + bs, zoom);
+        const ty = p.vpY(b.y0 + self.top, zoom);
+        const by = p.vpY(b.y1 - self.bottom, zoom);
 
         // Right/bottom use the last pixel inside the crop, so a zero margin
         // lands on the page's edge cell instead of one past it.
@@ -267,10 +276,10 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
         const row_t: i32 = @intFromFloat(@floor(ty / ppr));
         const row_b: i32 = @intFromFloat(@floor((by - 1) / ppr));
 
-        const oddx_col: ?i32 = if (odd) blk: {
-            const ox = vx0 + (self.sliderX(b) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
-            break :blk @intFromFloat(@floor(ox / ppc));
-        } else null;
+        const oddx_col: ?i32 = if (odd)
+            @intFromFloat(@floor(p.vpX(self.sliderX(b), zoom) / ppc))
+        else
+            null;
 
         const c0: i32 = @intCast(p.vp_x_left / ctx.last_pix_per_col);
         const c1: i32 = @intCast((p.vp_x_right - 1) / ctx.last_pix_per_col);

@@ -5,6 +5,8 @@ const Context = @import("../Context.zig").Context;
 const Config = @import("../config/Config.zig");
 const PdfHandler = @import("../handlers/PdfHandler.zig");
 
+pub const hides_page = true;
+
 context: *Context,
 entries: []const PdfHandler.OutlineEntry,
 visible: std.ArrayList(usize),
@@ -113,16 +115,7 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
         if (self.cursor + 1 < self.visible.items.len) self.cursor += 1;
         return;
     }
-    if (key.matches(km.scroll_half_down.codepoint, km.scroll_half_down.mods)) {
-        const step: usize = @max(1, self.context.vx.window().height / 2);
-        self.context.animateListCursor(&self.cursor, @min(self.cursor + step, self.visible.items.len - 1));
-        return;
-    }
-    if (key.matches(km.scroll_half_up.codepoint, km.scroll_half_up.mods)) {
-        const step: usize = @max(1, self.context.vx.window().height / 2);
-        self.context.animateListCursor(&self.cursor, self.cursor -| step);
-        return;
-    }
+    if (self.context.handleListHalfPage(key, &self.cursor, self.visible.items.len)) return;
     if (key.matches('L', .{})) {
         self.expandOneLevel();
         return;
@@ -152,8 +145,7 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
         return;
     }
     if (key.matches(km.open_in_editor.codepoint, km.open_in_editor.mods)) {
-        const idx: ?usize = if (self.cursor < self.visible.items.len) self.visible.items[self.cursor] else null;
-        self.context.openOutlineInEditor(idx) catch {};
+        self.context.openOutlineInEditor(self.currentEntryIdx()) catch {};
         return;
     }
     if (key.matches(vaxis.Key.enter, .{})) {
@@ -192,21 +184,35 @@ fn expandCurrent(self: *Self) void {
     self.refindCursor(idx);
 }
 
+fn currentEntryIdx(self: *Self) ?usize {
+    if (self.cursor < self.visible.items.len) return self.visible.items[self.cursor];
+    return null;
+}
+
+// Pre-order outline: the parent is the nearest preceding shallower entry.
+fn parentOf(self: *Self, idx: usize) ?usize {
+    const d = self.entries[idx].depth;
+    if (d == 0) return null;
+    var k = idx;
+    while (k > 0) {
+        k -= 1;
+        if (self.entries[k].depth < d) return k;
+    }
+    return null;
+}
+
+fn visibleIndexOf(self: *Self, entry_idx: usize) ?usize {
+    for (self.visible.items, 0..) |v, i| {
+        if (v == entry_idx) return i;
+    }
+    return null;
+}
+
 fn collapseCurrent(self: *Self) void {
-    if (self.cursor >= self.visible.items.len) return;
-    var idx = self.visible.items[self.cursor];
+    var idx = self.currentEntryIdx() orelse return;
     // If current is not expanded, collapse parent and move cursor to it
     if (!self.expanded.contains(idx)) {
-        const cur_depth = self.entries[idx].depth;
-        if (cur_depth == 0) return;
-        var k = idx;
-        while (k > 0) {
-            k -= 1;
-            if (self.entries[k].depth < cur_depth) {
-                idx = k;
-                break;
-            }
-        }
+        idx = self.parentOf(idx) orelse return;
     }
     _ = self.expanded.remove(idx);
     self.rebuildVisible() catch {};
@@ -215,7 +221,7 @@ fn collapseCurrent(self: *Self) void {
 
 // vim zr: every visible collapsed branch opens one level.
 fn expandOneLevel(self: *Self) void {
-    const cur: ?usize = if (self.cursor < self.visible.items.len) self.visible.items[self.cursor] else null;
+    const cur = self.currentEntryIdx();
     var changed = false;
     for (self.visible.items) |idx| {
         if (self.hasChildren(idx) and !self.expanded.contains(idx)) {
@@ -230,7 +236,7 @@ fn expandOneLevel(self: *Self) void {
 
 // vim zm: the deepest currently-expanded level folds shut.
 fn collapseOneLevel(self: *Self) void {
-    const cur: ?usize = if (self.cursor < self.visible.items.len) self.visible.items[self.cursor] else null;
+    const cur = self.currentEntryIdx();
     var dmax: ?u8 = null;
     for (self.visible.items) |idx| {
         if (!self.expanded.contains(idx)) continue;
@@ -252,29 +258,10 @@ fn collapseOneLevel(self: *Self) void {
 // shallower entry is the parent).
 fn refindCursorOrAncestor(self: *Self, entry_idx: usize) void {
     var idx = entry_idx;
-    while (true) {
-        for (self.visible.items, 0..) |v, i| {
-            if (v == idx) {
-                self.cursor = i;
-                return;
-            }
-        }
-        if (idx == 0) break;
-        const d = self.entries[idx].depth;
-        var parent: ?usize = null;
-        var k = idx;
-        while (k > 0) {
-            k -= 1;
-            if (self.entries[k].depth < d) {
-                parent = k;
-                break;
-            }
-        }
-        idx = parent orelse break;
+    while (self.visibleIndexOf(idx) == null) {
+        idx = self.parentOf(idx) orelse break;
     }
-    if (self.visible.items.len > 0 and self.cursor >= self.visible.items.len) {
-        self.cursor = self.visible.items.len - 1;
-    }
+    self.refindCursor(idx);
 }
 
 fn toggleCurrent(self: *Self) void {
@@ -291,11 +278,9 @@ fn toggleCurrent(self: *Self) void {
 }
 
 fn refindCursor(self: *Self, entry_idx: usize) void {
-    for (self.visible.items, 0..) |v, i| {
-        if (v == entry_idx) {
-            self.cursor = i;
-            return;
-        }
+    if (self.visibleIndexOf(entry_idx)) |i| {
+        self.cursor = i;
+        return;
     }
     if (self.visible.items.len > 0 and self.cursor >= self.visible.items.len) {
         self.cursor = self.visible.items.len - 1;

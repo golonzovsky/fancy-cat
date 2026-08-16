@@ -5,6 +5,8 @@ const Context = @import("../Context.zig").Context;
 const Config = @import("../config/Config.zig");
 const CommandMode = @import("CommandMode.zig");
 
+pub const hides_page = true;
+
 context: *Context,
 draw_arena: std.heap.ArenaAllocator,
 

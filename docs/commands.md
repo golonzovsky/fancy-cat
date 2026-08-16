@@ -22,6 +22,9 @@ same table that dispatches these commands.)
   pages in spread); also bound to `W`. A manual zoom releases it
 - `:crop [T [R [B [L]]]]` — trim margins in PDF points, CSS-shorthand value rules;
   bare `:crop` resets the trim
+- `:export [path]` — write a copy of the PDF with the current crop and `oddx`
+  baked into the page boxes (lossless; for printing without margins). Default
+  path: `<book>-cropped.pdf` next to the original
 - `:help` — help popup
 - `:q` — quit
 

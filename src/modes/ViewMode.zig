@@ -50,6 +50,74 @@ const bindings = .{
     .{ "exit_command_mode", Context.escapeClear },
 };
 
+pub fn handleMouse(self: *Self, mouse: vaxis.Mouse) void {
+    const ctx = self.context;
+    switch (mouse.type) {
+        .press => {
+            const step = ctx.config.general.scroll_step / 4.0;
+            const zoom_mod = mouse.mods.ctrl or mouse.mods.alt;
+            switch (mouse.button) {
+                .wheel_up => {
+                    if (zoom_mod) {
+                        ctx.document_handler.zoomIn();
+                        ctx.reload_page = true;
+                    } else if (mouse.mods.shift) {
+                        ctx.document_handler.offsetScroll(step, 0);
+                    } else {
+                        ctx.document_handler.scrollY(step);
+                    }
+                },
+                .wheel_down => {
+                    if (zoom_mod) {
+                        ctx.document_handler.zoomOut();
+                        ctx.reload_page = true;
+                    } else if (mouse.mods.shift) {
+                        ctx.document_handler.offsetScroll(-step, 0);
+                    } else {
+                        ctx.document_handler.scrollY(-step);
+                    }
+                },
+                .wheel_left => {
+                    if (!ctx.lock_horizontal_scroll) ctx.document_handler.offsetScroll(step, 0);
+                },
+                .wheel_right => {
+                    if (!ctx.lock_horizontal_scroll) ctx.document_handler.offsetScroll(-step, 0);
+                },
+                .left => {
+                    ctx.clearSelection();
+                    ctx.selection_anchor = ctx.pdfPointAt(mouse);
+                    ctx.selection_dragged = false;
+                },
+                else => {},
+            }
+        },
+        .drag => {
+            if (mouse.button == .left) {
+                if (ctx.selection_anchor) |anchor| {
+                    if (ctx.pdfPointAt(mouse)) |head| {
+                        if (head.page == anchor.page) {
+                            ctx.selection_dragged = true;
+                            ctx.updateSelection(anchor, head);
+                        }
+                    }
+                }
+            }
+        },
+        .release => {
+            if (mouse.button == .left) {
+                if (ctx.selection_dragged and ctx.selection_hits.items.len > 0) {
+                    ctx.finishSelection();
+                } else {
+                    ctx.handleLeftClick(mouse) catch {};
+                }
+                ctx.selection_anchor = null;
+                ctx.selection_dragged = false;
+            }
+        },
+        else => {},
+    }
+}
+
 pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
     const ctx = self.context;
 

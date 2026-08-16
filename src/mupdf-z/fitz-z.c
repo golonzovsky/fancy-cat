@@ -551,3 +551,44 @@ int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size) 
   fz_catch(ctx) { written = 0; }
   return written;
 }
+
+int fz_export_cropped_z(fz_context *ctx, const char *src_path, const char *dst_path,
+                        float left, float right, float top, float bottom, int odd_shift_x) {
+  pdf_document *pdf = NULL;
+  int ok = 0;
+  fz_var(pdf);
+  fz_var(ok);
+  fz_try(ctx) {
+    pdf = pdf_open_document(ctx, src_path);
+    int n = pdf_count_pages(ctx, pdf);
+    for (int i = 0; i < n; i++) {
+      pdf_obj *pageobj = pdf_lookup_page_obj(ctx, pdf, i);
+      fz_rect mediabox;
+      fz_matrix ctm;
+      pdf_page_obj_transform(ctx, pageobj, &mediabox, &ctm);
+      fz_rect bound = fz_transform_rect(mediabox, ctm);
+      float shift = (i % 2 == 1) ? (float)odd_shift_x : 0.0f;
+      fz_rect want;
+      want.x0 = bound.x0 + left - shift;
+      want.x1 = bound.x1 - right - shift;
+      want.y0 = bound.y0 + top;
+      want.y1 = bound.y1 - bottom;
+      if (want.x1 <= want.x0 || want.y1 <= want.y0) continue;
+      // Back through the page transform so rotation and the y-flip are honored.
+      fz_rect box = fz_transform_rect(want, fz_invert_matrix(ctm));
+      pdf_dict_put_rect(ctx, pageobj, PDF_NAME(MediaBox), box);
+      pdf_dict_put_rect(ctx, pageobj, PDF_NAME(CropBox), box);
+    }
+    // The copy must not share the source's /ID: the viewer keys saved state
+    // (position, crop, oddx) on it, and inherited state would re-apply the
+    // crop on top of the baked-in one. Without an ID the viewer falls back
+    // to a content hash, which is unique to the exported file.
+    pdf_dict_del(ctx, pdf_trailer(ctx, pdf), PDF_NAME(ID));
+    pdf_write_options opts = pdf_default_write_options;
+    pdf_save_document(ctx, pdf, dst_path, &opts);
+    ok = 1;
+  }
+  fz_always(ctx) { pdf_drop_document(ctx, pdf); }
+  fz_catch(ctx) { ok = 0; }
+  return ok;
+}

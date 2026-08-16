@@ -4,6 +4,8 @@ const vaxis = @import("vaxis");
 const Context = @import("../Context.zig").Context;
 const Config = @import("../config/Config.zig");
 
+pub const hides_page = true;
+
 context: *Context,
 cursor: usize,
 top: usize,
@@ -105,16 +107,7 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
         if (self.cursor + 1 < hits.len) self.cursor += 1;
         return;
     }
-    if (key.matches(km.scroll_half_down.codepoint, km.scroll_half_down.mods)) {
-        const step: usize = @max(1, ctx.vx.window().height / 2);
-        ctx.animateListCursor(&self.cursor, @min(self.cursor + step, hits.len - 1));
-        return;
-    }
-    if (key.matches(km.scroll_half_up.codepoint, km.scroll_half_up.mods)) {
-        const step: usize = @max(1, ctx.vx.window().height / 2);
-        ctx.animateListCursor(&self.cursor, self.cursor -| step);
-        return;
-    }
+    if (ctx.handleListHalfPage(key, &self.cursor, hits.len)) return;
     if (key.matches('g', .{})) {
         self.cursor = 0;
         return;

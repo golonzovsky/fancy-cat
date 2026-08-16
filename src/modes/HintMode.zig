@@ -5,6 +5,8 @@ const Context = @import("../Context.zig").Context;
 const Config = @import("../config/Config.zig");
 const PdfHandler = @import("../handlers/PdfHandler.zig");
 
+pub const page_behind_text = true;
+
 pub const Position = struct {
     cell_col: u16,
     cell_row: u16,
@@ -74,30 +76,20 @@ fn populate(self: *Self) !void {
         const links = self.context.document_handler.loadLinks(a, p.page_num) catch continue;
         defer a.free(links);
         for (links) |link| {
-            const odd_shift_pix: f32 = if (p.page_num % 2 == 1)
-                @as(f32, @floatFromInt(self.context.document_handler.getOddShiftX())) * zoom
+            const shift_pdf: f32 = if (p.page_num % 2 == 1)
+                @floatFromInt(self.context.document_handler.getOddShiftX())
             else
                 0;
-            const pdf_x = link.rect.x0;
-            const pdf_y = link.rect.y0;
-            const bitmap_x_f: f32 = (pdf_x - p.origin_x) * zoom + odd_shift_pix;
-            const bitmap_y_f: f32 = (pdf_y - p.origin_y) * zoom;
-            const bitmap_x_u: u32 = if (bitmap_x_f < 0) 0 else @intFromFloat(bitmap_x_f);
-            const bitmap_y_u: u32 = if (bitmap_y_f < 0) 0 else @intFromFloat(bitmap_y_f);
-            if (bitmap_x_u < p.clip_x or bitmap_y_u < p.clip_y) {
+            const px = p.vpX(link.rect.x0 + shift_pdf, zoom);
+            const py = p.vpY(link.rect.y0, zoom);
+            if (px < @as(f32, @floatFromInt(p.vp_x_left)) or px >= @as(f32, @floatFromInt(p.vp_x_right)) or
+                py < @as(f32, @floatFromInt(p.vp_y_top)) or py >= @as(f32, @floatFromInt(p.vp_y_bot)))
+            {
                 if (link.target == .uri) a.free(link.target.uri);
                 continue;
             }
-            const dx = bitmap_x_u - p.clip_x;
-            const dy = bitmap_y_u - p.clip_y;
-            const pix_x = p.vp_x_left + dx;
-            const pix_y = p.vp_y_top + dy;
-            if (pix_y >= p.vp_y_bot or pix_x >= p.vp_x_right) {
-                if (link.target == .uri) a.free(link.target.uri);
-                continue;
-            }
-            const cell_col: u16 = @intCast(pix_x / @as(u32, self.context.last_pix_per_col));
-            const cell_row: u16 = @intCast(pix_y / @as(u32, self.context.last_pix_per_row));
+            const cell_col: u16 = @intCast(@as(u32, @intFromFloat(px)) / @as(u32, self.context.last_pix_per_col));
+            const cell_row: u16 = @intCast(@as(u32, @intFromFloat(py)) / @as(u32, self.context.last_pix_per_row));
 
             if (self.findGroup(link.target)) |idx| {
                 try self.hints.items[idx].positions.append(a, .{ .cell_col = cell_col, .cell_row = cell_row });
@@ -159,7 +151,7 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
     }
 }
 
-pub fn drawHints(self: *Self, win: vaxis.Window) void {
+pub fn draw(self: *Self, win: vaxis.Window) void {
     const hint_color = vaxis.Cell.Style{
         .fg = .{ .rgb = .{ 220, 20, 60 } },
         .bold = true,

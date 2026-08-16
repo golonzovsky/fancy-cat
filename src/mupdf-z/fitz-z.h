@@ -71,3 +71,10 @@ int fz_extract_pages_z(
     const char *image_dir_abs,
     fz_extract_event_fn on_event, void *event_userdata,
     fz_progress_fn on_progress, void *progress_userdata);
+
+// Writes a copy of the PDF at src_path to dst_path with each page's
+// MediaBox/CropBox set to the crop window: margins inset in PDF points, and
+// the window shifted by -odd_shift_x on odd (0-based) pages, matching the
+// viewer's aligned-space crop. Lossless (content untouched). Returns 1 on success.
+int fz_export_cropped_z(fz_context *ctx, const char *src_path, const char *dst_path,
+                        float left, float right, float top, float bottom, int odd_shift_x);

@@ -3,6 +3,8 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const Context = @import("../Context.zig").Context;
 const Config = @import("../config/Config.zig");
+
+pub const occupies_bottom_row = true;
 const TextInput = vaxis.widgets.TextInput;
 
 context: *Context,

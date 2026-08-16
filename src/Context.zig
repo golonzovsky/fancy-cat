@@ -43,6 +43,15 @@ pub const VisiblePage = struct {
     clip_y: u32,
     origin_x: f32,
     origin_y: f32,
+
+    // Viewport pixel position of a rendered-space pdf coordinate; the inverse
+    // of pdfPointAt's mapping. May fall outside this segment.
+    pub fn vpX(p: VisiblePage, pdf_x: f32, zoom: f32) f32 {
+        return @as(f32, @floatFromInt(p.vp_x_left)) + (pdf_x - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
+    }
+    pub fn vpY(p: VisiblePage, pdf_y: f32, zoom: f32) f32 {
+        return @as(f32, @floatFromInt(p.vp_y_top)) + (pdf_y - p.origin_y) * zoom - @as(f32, @floatFromInt(p.clip_y));
+    }
 };
 
 pub const JumpPosition = struct {
@@ -115,6 +124,7 @@ pub const Context = struct {
     // Images displaced from the cache; deleted terminal-side after the next
     // render (deleting before would blank their placements for a frame).
     stale_images: std.ArrayList(Cache.CachedImage),
+    last_save_sig: u64,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, path: [:0]const u8, initial_page: ?u16) !Self {
         const config = try allocator.create(Config);
@@ -255,11 +265,12 @@ pub const Context = struct {
             .selection_gen = 0,
             .selection_render_ns = 0,
             .stale_images = .empty,
+            .last_save_sig = 0,
         };
     }
 
     pub fn saveState(self: *Self) void {
-        self.positions.save(.{
+        const pos = Positions.Position{
             .page = self.document_handler.getCurrentPageNumber(),
             .scroll_x = self.document_handler.getScrollX(),
             .scroll_y = self.document_handler.getScrollY(),
@@ -276,7 +287,30 @@ pub const Context = struct {
             .crop_bottom = self.document_handler.crop_bottom,
             .path = self.doc_abs_path,
             .last_opened = time.nowRealSeconds(),
-        }, self.marks.items, self.highlights.items);
+        };
+        // Most event batches change nothing persistent; skip the file
+        // read-merge-write when the saved state would be identical.
+        var hasher = std.hash.Wyhash.init(0);
+        std.hash.autoHash(&hasher, .{
+            pos.page,                          pos.scroll_x,
+            pos.scroll_y,                      @as(u32, @bitCast(pos.zoom)),
+            pos.odd_shift_x,                   pos.colorize,
+            pos.crop,                          pos.hlock,
+            pos.spread,                        pos.fit_width,
+            @as(u32, @bitCast(pos.crop_left)), @as(u32, @bitCast(pos.crop_right)),
+            @as(u32, @bitCast(pos.crop_top)),  @as(u32, @bitCast(pos.crop_bottom)),
+        });
+        for (self.marks.items) |m| {
+            std.hash.autoHash(&hasher, .{ m.letter, m.page, m.scroll_x, m.scroll_y });
+            hasher.update(m.comment);
+        }
+        for (self.highlights.items) |h| {
+            std.hash.autoHash(&hasher, .{ h.page, h.text.len, h.rects.len });
+        }
+        const sig = hasher.final();
+        if (sig == self.last_save_sig) return;
+        self.last_save_sig = sig;
+        self.positions.save(pos, self.marks.items, self.highlights.items);
     }
 
     pub fn deinit(self: *Self) void {
@@ -401,9 +435,9 @@ pub const Context = struct {
             // Persist position/zoom after any state-changing batch — draw() above
             // has already finalized active_zoom — so it survives a non-clean exit
             // (terminal closed, killed) without waiting for deinit on quit.
-            // Not while cropping: the preview runs with margins/oddx zeroed and
-            // its scroll is transient; deinit restores the reading position.
-            if (had_event and self.current_mode != .crop) self.saveState();
+            // Not in modes that borrow document state (crop preview runs with
+            // margins/oddx zeroed and transient scroll; deinit restores it).
+            if (had_event and !self.modeFlag("suppress_autosave")) self.saveState();
         }
     }
 
@@ -472,10 +506,28 @@ pub const Context = struct {
         while (i <= frames) : (i += 1) {
             const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(frames));
             const eased = 1.0 - std.math.pow(f32, 1.0 - t, 3.0);
-            cursor.* = @intFromFloat(@round(start + delta * eased));
+            const next: usize = @intFromFloat(@round(start + delta * eased));
+            if (next == cursor.*) continue; // rounding duplicate: nothing to show
+            cursor.* = next;
             self.renderFrame() catch return;
             if (i < frames) time.sleep(frame_ns);
         }
+    }
+
+    // Shared Ctrl-D/Ctrl-U handling for the list popups; true if consumed.
+    // Callers guarantee len > 0.
+    pub fn handleListHalfPage(self: *Self, key: vaxis.Key, cursor: *usize, len: usize) bool {
+        const km = self.config.key_map;
+        const step: usize = @max(1, self.vx.window().height / 2);
+        if (key.matches(km.scroll_half_down.codepoint, km.scroll_half_down.mods)) {
+            self.animateListCursor(cursor, @min(cursor.* + step, len - 1));
+            return true;
+        }
+        if (key.matches(km.scroll_half_up.codepoint, km.scroll_half_up.mods)) {
+            self.animateListCursor(cursor, cursor.* -| step);
+            return true;
+        }
+        return false;
     }
 
     pub fn handleKeyStroke(self: *Self, key: vaxis.Key) !void {
@@ -499,91 +551,10 @@ pub const Context = struct {
                 try self.handleKeyStroke(key);
             },
             .mouse => |mouse| {
-                if (self.current_mode == .toc) {
-                    self.current_mode.toc.handleMouse(mouse);
-                    return;
-                }
-                if (self.current_mode == .marks) {
-                    self.current_mode.marks.handleMouse(mouse);
-                    return;
-                }
-                if (self.current_mode == .search_list) {
-                    self.current_mode.search_list.handleMouse(mouse);
-                    return;
-                }
-                if (self.current_mode == .highlights) {
-                    self.current_mode.highlights.handleMouse(mouse);
-                    return;
-                }
-                if (self.current_mode == .crop) {
-                    self.current_mode.crop.handleMouse(mouse);
-                    return;
-                }
-                if (self.current_mode == .view) {
-                    switch (mouse.type) {
-                        .press => {
-                            const step = self.config.general.scroll_step / 4.0;
-                            const zoom_mod = mouse.mods.ctrl or mouse.mods.alt;
-                            switch (mouse.button) {
-                                .wheel_up => {
-                                    if (zoom_mod) {
-                                        self.document_handler.zoomIn();
-                                        self.reload_page = true;
-                                    } else if (mouse.mods.shift) {
-                                        self.document_handler.offsetScroll(step, 0);
-                                    } else {
-                                        self.document_handler.scrollY(step);
-                                    }
-                                },
-                                .wheel_down => {
-                                    if (zoom_mod) {
-                                        self.document_handler.zoomOut();
-                                        self.reload_page = true;
-                                    } else if (mouse.mods.shift) {
-                                        self.document_handler.offsetScroll(-step, 0);
-                                    } else {
-                                        self.document_handler.scrollY(-step);
-                                    }
-                                },
-                                .wheel_left => {
-                                    if (!self.lock_horizontal_scroll) self.document_handler.offsetScroll(step, 0);
-                                },
-                                .wheel_right => {
-                                    if (!self.lock_horizontal_scroll) self.document_handler.offsetScroll(-step, 0);
-                                },
-                                .left => {
-                                    self.clearSelection();
-                                    self.selection_anchor = self.pdfPointAt(mouse);
-                                    self.selection_dragged = false;
-                                },
-                                else => {},
-                            }
-                        },
-                        .drag => {
-                            if (mouse.button == .left) {
-                                if (self.selection_anchor) |anchor| {
-                                    if (self.pdfPointAt(mouse)) |head| {
-                                        if (head.page == anchor.page) {
-                                            self.selection_dragged = true;
-                                            self.updateSelection(anchor, head);
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        .release => {
-                            if (mouse.button == .left) {
-                                if (self.selection_dragged and self.selection_hits.items.len > 0) {
-                                    self.finishSelection();
-                                } else {
-                                    try self.handleLeftClick(mouse);
-                                }
-                                self.selection_anchor = null;
-                                self.selection_dragged = false;
-                            }
-                        },
-                        else => {},
-                    }
+                switch (self.current_mode) {
+                    inline else => |*m| {
+                        if (comptime @hasDecl(@TypeOf(m.*), "handleMouse")) m.handleMouse(mouse);
+                    },
                 }
             },
             .winsize => |ws| {
@@ -772,7 +743,7 @@ pub const Context = struct {
         self.visible_pages_len = 0;
 
         var viewport_rows: u16 = win.height;
-        if (self.config.status_bar.enabled or self.current_mode == .command or self.current_mode == .search or self.current_mode == .crop) viewport_rows -|= 1;
+        if (self.config.status_bar.enabled or self.modeFlag("occupies_bottom_row")) viewport_rows -|= 1;
         const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
         self.last_viewport_h_pix = viewport_h_pix;
 
@@ -783,7 +754,7 @@ pub const Context = struct {
         const render_cells: u16 = col_cells;
         const render_w_pix: u32 = @as(u32, render_cells) * @as(u32, pix_per_col);
 
-        if (self.current_mode == .marks or self.current_mode == .toc or self.current_mode == .help or self.current_mode == .search_list or self.current_mode == .highlights) return;
+        if (self.modeFlag("hides_page")) return;
 
         var page_num = self.document_handler.getCurrentPageNumber();
         const total_pages = self.document_handler.getTotalPages();
@@ -889,7 +860,7 @@ pub const Context = struct {
                         .height = @intCast(visible_h),
                     },
                     .size = .{ .cols = dest_cols, .rows = dest_rows },
-                    .z_index = if (self.current_mode == .hint or self.current_mode == .marks or self.current_mode == .crop) -1 else null,
+                    .z_index = if (self.modeFlag("page_behind_text")) -1 else null,
                 });
 
                 if (self.visible_pages_len < self.visible_pages.len) {
@@ -969,7 +940,7 @@ pub const Context = struct {
         }
     }
 
-    fn updateSelection(self: *Self, anchor: PagePoint, head: PagePoint) void {
+    pub fn updateSelection(self: *Self, anchor: PagePoint, head: PagePoint) void {
         self.selection_hits.clearRetainingCapacity();
         if (self.selection_text.len > 0) {
             self.allocator.free(self.selection_text);
@@ -1009,7 +980,7 @@ pub const Context = struct {
         self.reload_page = true;
     }
 
-    fn finishSelection(self: *Self) void {
+    pub fn finishSelection(self: *Self) void {
         if (self.selection_text.len == 0) return;
         const w = self.tty.writer();
         self.vx.copyToSystemClipboard(w, self.selection_text, self.allocator) catch {};
@@ -1147,14 +1118,19 @@ pub const Context = struct {
         self.reload_page = true;
     }
 
+    // Jump to `page` scrolled so pdf_y sits near the viewport top.
+    pub fn gotoPagePdfY(self: *Self, page: u16, pdf_y: f32) void {
+        self.document_handler.setCurrentPage(page);
+        self.document_handler.setScrollY(0);
+        self.document_handler.setPendingScrollPdfY(pdf_y);
+        self.resetCurrentPage();
+    }
+
     pub fn jumpToHighlight(self: *Self, idx: usize) void {
         if (idx >= self.highlights.items.len) return;
         const h = self.highlights.items[idx];
         self.pushJump();
-        self.document_handler.setCurrentPage(h.page);
-        self.document_handler.setScrollY(0);
-        if (h.rects.len >= 2) self.document_handler.setPendingScrollPdfY(h.rects[1]);
-        self.resetCurrentPage();
+        self.gotoPagePdfY(h.page, if (h.rects.len >= 2) h.rects[1] else 0);
     }
 
     // Esc in view mode: drop the selection first; a second Esc clears search.
@@ -1270,6 +1246,32 @@ pub const Context = struct {
                 return;
             }
         }
+    }
+
+    // `:export [path]` — cropped/aligned copy of the PDF for printing.
+    pub fn exportCropped(self: *Self, arg: []const u8) void {
+        var path_buf: [1024]u8 = undefined;
+        const out: [:0]const u8 = blk: {
+            if (arg.len > 0) break :blk std.fmt.bufPrintZ(&path_buf, "{s}", .{arg}) catch {
+                self.progress_text = " export: path too long ";
+                return;
+            };
+            const dir = std.fs.path.dirname(self.doc_abs_path) orelse ".";
+            const stem = std.fs.path.stem(self.doc_abs_path);
+            break :blk std.fmt.bufPrintZ(&path_buf, "{s}/{s}-cropped.pdf", .{ dir, stem }) catch {
+                self.progress_text = " export: path too long ";
+                return;
+            };
+        };
+        self.document_handler.exportCropped(out) catch |err| {
+            self.progress_text = switch (err) {
+                error.NothingToApply => " export: no crop or oddx set ",
+                else => " export failed ",
+            };
+            return;
+        };
+        const msg = std.fmt.bufPrint(&self.progress_buf, " exported {s} ", .{out}) catch " exported ";
+        self.progress_text = msg;
     }
 
     pub fn openCurrentPageInEditor(self: *Self) !void {
@@ -1739,13 +1741,19 @@ pub const Context = struct {
         } else if (self.config.status_bar.enabled) {
             try self.drawStatusBar(win);
         }
-        if (self.current_mode == .hint) self.current_mode.hint.drawHints(win);
-        if (self.current_mode == .marks) self.current_mode.marks.draw(win);
-        if (self.current_mode == .toc) self.current_mode.toc.draw(win);
-        if (self.current_mode == .help) self.current_mode.help.draw(win);
-        if (self.current_mode == .search_list) self.current_mode.search_list.draw(win);
-        if (self.current_mode == .highlights) self.current_mode.highlights.draw(win);
-        if (self.current_mode == .crop) self.current_mode.crop.draw(win);
+        switch (self.current_mode) {
+            inline else => |*m| {
+                if (comptime @hasDecl(@TypeOf(m.*), "draw")) m.draw(win);
+            },
+        }
+    }
+
+    // Reads a mode's comptime trait flag (e.g. `pub const hides_page = true;`)
+    // so modes declare their behavior instead of Context keeping per-mode lists.
+    fn modeFlag(self: *Self, comptime flag: []const u8) bool {
+        return switch (self.current_mode) {
+            inline else => |*m| comptime if (@hasDecl(@TypeOf(m.*), flag)) @field(@TypeOf(m.*), flag) else false,
+        };
     }
 
     pub fn toggleFullScreen(self: *Self) void {

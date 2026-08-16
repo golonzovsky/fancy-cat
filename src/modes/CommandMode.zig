@@ -3,6 +3,8 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const Context = @import("../Context.zig").Context;
 const Config = @import("../config/Config.zig");
+
+pub const occupies_bottom_row = true;
 const TextInput = vaxis.widgets.TextInput;
 
 context: *Context,
@@ -135,6 +137,7 @@ pub const commands = .{
     .{ handleSpread, ":spread", "2-column spread" },
     .{ handleFit, ":fit", "lock zoom to width" },
     .{ handleCrop, ":crop [TRBL]", "trim margins; bare=reset" },
+    .{ handleExport, ":export [path]", "print copy: crop+oddx baked" },
     .{ handleHelp, ":help", "this help" },
     .{ handleQuit, ":q", "quit" },
 };
@@ -299,6 +302,13 @@ fn handleAltShift(self: *Self, cmd: []const u8) bool {
     const n = std.fmt.parseInt(i32, rest, 10) catch return false;
     self.context.document_handler.setOddShiftX(n);
     self.context.resetCurrentPage();
+    return true;
+}
+
+fn handleExport(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.startsWith(u8, cmd, "export")) return false;
+    const rest = std.mem.trim(u8, cmd["export".len..], &std.ascii.whitespace);
+    self.context.exportCropped(rest);
     return true;
 }
 
