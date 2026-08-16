@@ -6,7 +6,7 @@ const PagePoint = @import("../Context.zig").PagePoint;
 const Config = @import("../config/Config.zig");
 const PdfHandler = @import("../handlers/PdfHandler.zig");
 
-const Side = enum { left, right, top, bottom };
+const Side = enum { left, right, top, bottom, offset };
 const min_gap: f32 = 24; // pt kept between opposite crop lines
 
 context: *Context,
@@ -15,6 +15,7 @@ right: f32,
 top: f32,
 bottom: f32,
 prev: [4]f32, // L R T B at entry, restored on cancel
+prev_oddx: i32,
 prev_auto: bool,
 cleared: bool, // init un-cropped the document; deinit must undo that
 applied: bool,
@@ -30,6 +31,7 @@ pub fn init(context: *Context) Self {
         .top = 0,
         .bottom = 0,
         .prev = .{ dh.crop_left, dh.crop_right, dh.crop_top, dh.crop_bottom },
+        .prev_oddx = dh.getOddShiftX(),
         .prev_auto = dh.getCropToContent(),
         .cleared = false,
         .applied = false,
@@ -51,17 +53,23 @@ pub fn init(context: *Context) Self {
         context.clearCache();
         context.resetCurrentPage();
     }
-    context.progress_text = " crop: drag lines · enter apply · esc cancel ";
+    context.progress_text = " crop: drag lines (odd pages: ┆ = offset) · enter apply · esc cancel ";
     return self;
 }
 
 pub fn deinit(self: *Self) void {
     const dh = &self.context.document_handler;
-    if (!self.applied and self.cleared) {
-        dh.setMarginCrop(self.prev[0], self.prev[1], self.prev[2], self.prev[3]);
-        if (self.prev_auto) dh.toggleCropToContent();
-        self.context.clearCache();
-        self.context.resetCurrentPage();
+    if (!self.applied) {
+        if (self.cleared) {
+            dh.setMarginCrop(self.prev[0], self.prev[1], self.prev[2], self.prev[3]);
+            if (self.prev_auto) dh.toggleCropToContent();
+            self.context.clearCache();
+            self.context.resetCurrentPage();
+        }
+        if (dh.getOddShiftX() != self.prev_oddx) {
+            dh.setOddShiftX(self.prev_oddx);
+            self.context.resetCurrentPage();
+        }
     }
     self.context.progress_text = null;
 }
@@ -116,11 +124,19 @@ pub fn handleMouse(self: *Self, mouse: vaxis.Mouse) void {
     }
 }
 
+// The crop window is fixed in aligned space — odd pages slide under it by
+// oddx (see pageRenderBound/renderPage) — so all x math uses aligned coords.
+fn alignedX(self: *Self, pt: PagePoint) f32 {
+    if (pt.page % 2 == 1) return pt.x + @as(f32, @floatFromInt(self.context.document_handler.getOddShiftX()));
+    return pt.x;
+}
+
 fn nearestSide(self: *Self, pt: PagePoint) Side {
     const b = self.drag_bound;
+    const ax = self.alignedX(pt);
     var side: Side = .left;
-    var best = @abs(pt.x - (b.x0 + self.left));
-    const dr = @abs((b.x1 - self.right) - pt.x);
+    var best = @abs(ax - (b.x0 + self.left));
+    const dr = @abs((b.x1 - self.right) - ax);
     if (dr < best) {
         side = .right;
         best = dr;
@@ -131,7 +147,16 @@ fn nearestSide(self: *Self, pt: PagePoint) Side {
         best = dt;
     }
     const db = @abs((b.y1 - self.bottom) - pt.y);
-    if (db < best) side = .bottom;
+    if (db < best) {
+        side = .bottom;
+        best = db;
+    }
+    // Odd pages also carry the oddx line; crop lines win ties so a zero
+    // offset at the page edge stays grabbable as the left crop line.
+    if (pt.page % 2 == 1) {
+        const shift: f32 = @floatFromInt(self.context.document_handler.getOddShiftX());
+        if (@abs(ax - (b.x0 + shift)) < best) side = .offset;
+    }
     return side;
 }
 
@@ -139,16 +164,21 @@ fn moveTo(self: *Self, pt: PagePoint) void {
     const b = self.drag_bound;
     const w = b.x1 - b.x0;
     const h = b.y1 - b.y0;
+    const ax = self.alignedX(pt);
+    const dh = &self.context.document_handler;
     switch (self.drag orelse return) {
-        .left => self.left = std.math.clamp(pt.x - b.x0, 0, @max(0, w - self.right - min_gap)),
-        .right => self.right = std.math.clamp(b.x1 - pt.x, 0, @max(0, w - self.left - min_gap)),
+        .left => self.left = std.math.clamp(ax - b.x0, 0, @max(0, w - self.right - min_gap)),
+        .right => self.right = std.math.clamp(b.x1 - ax, 0, @max(0, w - self.left - min_gap)),
         .top => self.top = std.math.clamp(pt.y - b.y0, 0, @max(0, h - self.bottom - min_gap)),
         .bottom => self.bottom = std.math.clamp(b.y1 - pt.y, 0, @max(0, h - self.top - min_gap)),
+        // Odd pages re-render as this changes: shift_x is in the cache key,
+        // so the next draw simply misses the cache at the new value.
+        .offset => dh.setOddShiftX(@intFromFloat(@round(std.math.clamp(ax - b.x0, -w / 2, w / 2)))),
     }
     self.context.progress_text = std.fmt.bufPrint(
         &self.context.progress_buf,
-        " crop {d:.0} {d:.0} {d:.0} {d:.0} (TRBL) · enter apply · esc cancel ",
-        .{ self.top, self.right, self.bottom, self.left },
+        " crop {d:.0} {d:.0} {d:.0} {d:.0} (TRBL) · oddx {d} · enter apply · esc cancel ",
+        .{ self.top, self.right, self.bottom, self.left, dh.getOddShiftX() },
     ) catch null;
 }
 
@@ -163,17 +193,23 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     const dim: vaxis.Cell = .{ .char = .{ .grapheme = "░", .width = 1 }, .style = .{ .fg = .{ .index = 8 } } };
     const line_style: vaxis.Cell.Style = .{ .fg = .{ .index = 3 }, .bold = true };
     const drag_style: vaxis.Cell.Style = .{ .fg = .{ .index = 11 }, .bold = true };
+    const offset_active = self.drag != null and self.drag.? == .offset;
+    const offset_style: vaxis.Cell.Style = if (offset_active)
+        .{ .fg = .{ .index = 14 }, .bold = true }
+    else
+        .{ .fg = .{ .index = 6 } };
 
     for (ctx.visible_pages[0..ctx.visible_pages_len]) |p| {
         const b = dh.getPageBound(p.page_num);
         if (b.x1 <= b.x0 or b.y1 <= b.y0) continue;
-        const shift: f32 = if (p.page_num % 2 == 1) @floatFromInt(dh.getOddShiftX()) else 0;
 
-        // Crop-line positions in viewport pixels (may fall outside this segment).
+        // Crop-line positions in viewport pixels (may fall outside this
+        // segment). X is aligned space — no oddx term — so the window sits at
+        // the same column on every page, matching what applying will show.
         const vx0: f32 = @floatFromInt(p.vp_x_left);
         const vy0: f32 = @floatFromInt(p.vp_y_top);
-        const lx = vx0 + ((b.x0 + self.left + shift) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
-        const rx = vx0 + ((b.x1 - self.right + shift) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
+        const lx = vx0 + ((b.x0 + self.left) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
+        const rx = vx0 + ((b.x1 - self.right) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
         const ty = vy0 + ((b.y0 + self.top) - p.origin_y) * zoom - @as(f32, @floatFromInt(p.clip_y));
         const by = vy0 + ((b.y1 - self.bottom) - p.origin_y) * zoom - @as(f32, @floatFromInt(p.clip_y));
 
@@ -183,6 +219,14 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
         const col_r: i32 = @intFromFloat(@floor((rx - 1) / ppc));
         const row_t: i32 = @intFromFloat(@floor(ty / ppr));
         const row_b: i32 = @intFromFloat(@floor((by - 1) / ppr));
+
+        // On odd pages the oddx line marks where the raw page edge currently
+        // sits in aligned space; dragging it edits the offset.
+        const oddx_col: ?i32 = if (p.page_num % 2 == 1) blk: {
+            const shift: f32 = @floatFromInt(dh.getOddShiftX());
+            const ox = vx0 + ((b.x0 + shift) - p.origin_x) * zoom - @as(f32, @floatFromInt(p.clip_x));
+            break :blk @intFromFloat(@floor(ox / ppc));
+        } else null;
 
         const c0: i32 = @intCast(p.vp_x_left / ctx.last_pix_per_col);
         const c1: i32 = @intCast((p.vp_x_right - 1) / ctx.last_pix_per_col);
@@ -210,10 +254,13 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
                             .bottom => on_h and row == row_b,
                             .left => on_v and col == col_l,
                             .right => on_v and col == col_r,
+                            .offset => false,
                         };
                         if (active) st = drag_style;
                     }
                     cell = .{ .char = .{ .grapheme = g, .width = 1 }, .style = st };
+                } else if (oddx_col != null and col == oddx_col.?) {
+                    cell = .{ .char = .{ .grapheme = "┆", .width = 1 }, .style = offset_style };
                 } else if (col < col_l or col > col_r or row < row_t or row > row_b) {
                     cell = dim;
                 }
