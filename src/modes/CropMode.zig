@@ -144,6 +144,24 @@ pub fn handleKeyStroke(self: *Self, key: vaxis.Key, km: Config.KeyMap) !void {
         self.context.changeMode(.view);
         return;
     }
+    if (key.matches('r', .{})) {
+        self.left = 0;
+        self.right = 0;
+        self.top = 0;
+        self.bottom = 0;
+        self.oddx = 0;
+        return;
+    }
+    if (key.matches(km.zoom_in.codepoint, km.zoom_in.mods)) {
+        self.context.document_handler.zoomIn();
+        self.context.reload_page = true;
+        return;
+    }
+    if (key.matches(km.zoom_out.codepoint, km.zoom_out.mods)) {
+        self.context.document_handler.zoomOut();
+        self.context.reload_page = true;
+        return;
+    }
     if (key.matches(km.execute_command.codepoint, km.execute_command.mods) or
         key.matches(km.crop_mode.codepoint, km.crop_mode.mods))
     {
@@ -155,8 +173,14 @@ pub fn handleMouse(self: *Self, mouse: vaxis.Mouse) void {
     const ctx = self.context;
     switch (mouse.type) {
         .press => switch (mouse.button) {
-            .wheel_up => ctx.document_handler.scrollY(ctx.config.general.scroll_step / 4.0),
-            .wheel_down => ctx.document_handler.scrollY(-ctx.config.general.scroll_step / 4.0),
+            .wheel_up => if (mouse.mods.ctrl or mouse.mods.alt) {
+                ctx.document_handler.zoomIn();
+                ctx.reload_page = true;
+            } else ctx.document_handler.scrollY(ctx.config.general.scroll_step / 4.0),
+            .wheel_down => if (mouse.mods.ctrl or mouse.mods.alt) {
+                ctx.document_handler.zoomOut();
+                ctx.reload_page = true;
+            } else ctx.document_handler.scrollY(-ctx.config.general.scroll_step / 4.0),
             .left => {
                 const pt = ctx.pdfPointAt(mouse) orelse return;
                 const b = self.pageBound(pt.page);
@@ -343,7 +367,7 @@ fn drawStatus(self: *Self, win: vaxis.Window) void {
     bar.fill(.{ .char = .{ .grapheme = " ", .width = 1 }, .style = style });
     const text = std.fmt.bufPrint(
         &self.status_buf,
-        " crop {d:.0} {d:.0} {d:.0} {d:.0} (TRBL) · oddx {d} · drag lines / ┆ · enter apply · esc cancel ",
+        " crop {d:.0} {d:.0} {d:.0} {d:.0} (TRBL) · oddx {d} · drag lines / ┆ · r reset · enter apply · esc cancel ",
         .{ self.top, self.right, self.bottom, self.left, self.oddx },
     ) catch return;
     _ = bar.print(&.{.{ .text = text, .style = style }}, .{ .col_offset = 0, .wrap = .none });

@@ -47,9 +47,10 @@ non-obvious ones:
   change, e.g. `1.25` for the old coarser feel)
 - `c` interactive crop: drag the four crop lines with the mouse (cropped parts
   dimmed, each visible page shows its own lines), wheel scrolls, `Enter` (or
-  `c`) applies, `Esc` cancels; on odd pages the cyan `┆` line is the `oddx`
-  offset — pages render unshifted while cropping, and dragging `┆` moves the
-  crop border over the still page to show where the aligned window will cut
+  `c`) applies, `Esc` cancels, `r` resets margins + offset; `i`/`o` and
+  Ctrl/Alt+wheel zoom while cropping; on odd pages the cyan `┆` line is the
+  `oddx` offset — pages render unshifted while cropping, and dragging `┆` moves
+  the crop border over the still page to show where the aligned window will cut
 - `t` auto-crop, `d` spread, `T` table of contents, `M` marks, `;` link hints,
   `m<a-z>`/`'<a-z>` set/jump mark, `Ctrl+O`/`Tab` jump back/forward,
   `e`/`E` page/chapter in `$EDITOR`
