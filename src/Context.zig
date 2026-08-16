@@ -401,7 +401,9 @@ pub const Context = struct {
             // Persist position/zoom after any state-changing batch — draw() above
             // has already finalized active_zoom — so it survives a non-clean exit
             // (terminal closed, killed) without waiting for deinit on quit.
-            if (had_event) self.saveState();
+            // Not while cropping: the preview runs with margins/oddx zeroed and
+            // its scroll is transient; deinit restores the reading position.
+            if (had_event and self.current_mode != .crop) self.saveState();
         }
     }
 

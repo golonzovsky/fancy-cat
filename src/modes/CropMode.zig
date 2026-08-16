@@ -26,6 +26,10 @@ applied: bool,
 // anchored by grab_dx.
 oddx: i32,
 grab_dx: f32,
+// Reading position at entry (page + viewport top in PDF points, so it
+// survives the zoom refits that crop changes trigger); restored on any exit.
+entry_page: u16,
+entry_pdf_y: f32,
 drag: ?Side,
 drag_bound: PdfHandler.PageBound,
 
@@ -44,9 +48,17 @@ pub fn init(context: *Context) Self {
         .applied = false,
         .oddx = dh.getOddShiftX(),
         .grab_dx = 0,
+        .entry_page = dh.getCurrentPageNumber(),
+        .entry_pdf_y = 0,
         .drag = null,
         .drag_bound = undefined,
     };
+    const entry_zoom = dh.getActiveZoom();
+    if (context.visible_pages_len > 0 and entry_zoom > 0) {
+        const p0 = context.visible_pages[0];
+        self.entry_page = p0.page_num;
+        self.entry_pdf_y = @as(f32, @floatFromInt(p0.clip_y)) / entry_zoom + p0.origin_y;
+    }
     // Seed the lines from the effective crop (manual margins or the
     // content-crop equivalent), then display the full page while adjusting.
     if (dh.cropInfo()) |ci| {
@@ -84,6 +96,12 @@ pub fn deinit(self: *Self) void {
             self.context.resetCurrentPage();
         }
     }
+    // Scrolling inside the preview is never kept: return to where reading was.
+    dh.setCurrentPage(self.entry_page);
+    dh.setScrollY(0);
+    dh.setScrollX(0);
+    dh.setPendingScrollPdfY(self.entry_pdf_y);
+    self.context.resetCurrentPage();
     self.context.progress_text = null;
 }
 
