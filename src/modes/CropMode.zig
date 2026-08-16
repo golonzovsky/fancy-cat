@@ -32,6 +32,8 @@ entry_page: u16,
 entry_pdf_y: f32,
 drag: ?Side,
 drag_bound: PdfHandler.PageBound,
+// Backs the status-bar text between frames; screen cells slice into it.
+status_buf: [160]u8,
 
 pub fn init(context: *Context) Self {
     const dh = &context.document_handler;
@@ -52,6 +54,7 @@ pub fn init(context: *Context) Self {
         .entry_pdf_y = 0,
         .drag = null,
         .drag_bound = undefined,
+        .status_buf = undefined,
     };
     const entry_zoom = dh.getActiveZoom();
     if (context.visible_pages_len > 0 and entry_zoom > 0) {
@@ -78,7 +81,6 @@ pub fn init(context: *Context) Self {
         dh.setOddShiftX(0);
         context.resetCurrentPage();
     }
-    context.progress_text = " crop: drag lines · ┆ oddx · enter apply · esc cancel ";
     return self;
 }
 
@@ -221,11 +223,6 @@ fn moveTo(self: *Self, pt: PagePoint) void {
         // handler stays at 0 until apply.
         .offset => self.oddx = @intFromFloat(@round(std.math.clamp(b.x0 + w / 2 + self.grab_dx - pt.x, -w / 2, w / 2))),
     }
-    self.context.progress_text = std.fmt.bufPrint(
-        &self.context.progress_buf,
-        " crop {d:.0} {d:.0} {d:.0} {d:.0} (TRBL) · oddx {d} · enter apply · esc cancel ",
-        .{ self.top, self.right, self.bottom, self.left, self.oddx },
-    ) catch null;
 }
 
 pub fn draw(self: *Self, win: vaxis.Window) void {
@@ -325,4 +322,20 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
             }
         }
     }
+
+    self.drawStatus(win);
+}
+
+// Crop mode owns the bottom row: the normal status items read handler state,
+// which is deliberately zeroed while cropping, so show the pending values.
+fn drawStatus(self: *Self, win: vaxis.Window) void {
+    const style = self.context.config.status_bar.style;
+    const bar = win.child(.{ .x_off = 0, .y_off = win.height -| 1, .width = win.width, .height = 1 });
+    bar.fill(.{ .char = .{ .grapheme = " ", .width = 1 }, .style = style });
+    const text = std.fmt.bufPrint(
+        &self.status_buf,
+        " crop {d:.0} {d:.0} {d:.0} {d:.0} (TRBL) · oddx {d} · drag lines / ┆ · enter apply · esc cancel ",
+        .{ self.top, self.right, self.bottom, self.left, self.oddx },
+    ) catch return;
+    _ = bar.print(&.{.{ .text = text, .style = style }}, .{ .col_offset = 0, .wrap = .none });
 }

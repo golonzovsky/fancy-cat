@@ -772,7 +772,7 @@ pub const Context = struct {
         self.visible_pages_len = 0;
 
         var viewport_rows: u16 = win.height;
-        if (self.config.status_bar.enabled or self.current_mode == .command or self.current_mode == .search) viewport_rows -|= 1;
+        if (self.config.status_bar.enabled or self.current_mode == .command or self.current_mode == .search or self.current_mode == .crop) viewport_rows -|= 1;
         const viewport_h_pix: u32 = @as(u32, viewport_rows) * @as(u32, pix_per_row);
         self.last_viewport_h_pix = viewport_h_pix;
 
