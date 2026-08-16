@@ -143,15 +143,27 @@ fn buildKeyLines(self: *Self, a: std.mem.Allocator) []const Line {
     return lines.items;
 }
 
+// Widths derived from the table so new commands can't outgrow the layout.
+const cmd_key_w: u16 = blk: {
+    var m: usize = 0;
+    for (cmd_lines) |l| m = @max(m, l.keys.len);
+    break :blk @intCast(m + 2);
+};
+const cmd_label_w: u16 = blk: {
+    var m: usize = 0;
+    for (cmd_lines) |l| m = @max(m, l.label.len);
+    break :blk @intCast(m);
+};
+
 fn drawColumn(popup: vaxis.Window, lines: []const Line, base_x: u16, key_w: u16, max_h: u16, bg: vaxis.Cell.Style, head: vaxis.Cell.Style, key_style: vaxis.Cell.Style) void {
     for (lines, 0..) |line, i| {
         const row: u16 = @intCast(i + 2);
         if (row >= max_h) break;
         if (line.header) {
-            _ = popup.print(&.{.{ .text = line.label, .style = head }}, .{ .row_offset = row, .col_offset = base_x });
+            _ = popup.print(&.{.{ .text = line.label, .style = head }}, .{ .row_offset = row, .col_offset = base_x, .wrap = .none });
         } else {
-            _ = popup.print(&.{.{ .text = line.keys, .style = key_style }}, .{ .row_offset = row, .col_offset = base_x + 1 });
-            _ = popup.print(&.{.{ .text = line.label, .style = bg }}, .{ .row_offset = row, .col_offset = base_x + key_w });
+            _ = popup.print(&.{.{ .text = line.keys, .style = key_style }}, .{ .row_offset = row, .col_offset = base_x + 1, .wrap = .none });
+            _ = popup.print(&.{.{ .text = line.label, .style = bg }}, .{ .row_offset = row, .col_offset = base_x + key_w, .wrap = .none });
         }
     }
 }
@@ -162,7 +174,7 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
     const key_lines = self.buildKeyLines(a);
 
     const right_base: u16 = 37;
-    const w: u16 = @min(@as(u16, win.width -| 4), 74);
+    const w: u16 = @min(@as(u16, win.width -| 4), right_base + cmd_key_w + cmd_label_w + 1);
     const content_h: u16 = @intCast(@max(key_lines.len, cmd_lines.len) + 3);
     const max_h: u16 = @min(content_h, @as(u16, @intCast(@as(usize, win.height) -| 2)));
     const x_off = (win.width -| w) / 2;
@@ -188,9 +200,9 @@ pub fn draw(self: *Self, win: vaxis.Window) void {
 
     _ = popup.print(
         &.{.{ .text = " Help — any key to close ", .style = head }},
-        .{ .row_offset = 0, .col_offset = 1 },
+        .{ .row_offset = 0, .col_offset = 1, .wrap = .none },
     );
 
     drawColumn(popup, key_lines, 1, 9, max_h, bg, head, key_style);
-    if (w > right_base + 8) drawColumn(popup, &cmd_lines, right_base, 12, max_h, bg, head, key_style);
+    if (w > right_base + 8) drawColumn(popup, &cmd_lines, right_base, cmd_key_w, max_h, bg, head, key_style);
 }

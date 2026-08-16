@@ -138,6 +138,7 @@ pub const commands = .{
     .{ handleFit, ":fit", "lock zoom to width" },
     .{ handleCrop, ":crop [TRBL]", "trim margins; bare=reset" },
     .{ handleExport, ":export [path]", "print copy: crop+oddx baked" },
+    .{ handleOverride, ":override", "bake crop into this file" },
     .{ handleHelp, ":help", "this help" },
     .{ handleQuit, ":q", "quit" },
 };
@@ -302,6 +303,12 @@ fn handleAltShift(self: *Self, cmd: []const u8) bool {
     const n = std.fmt.parseInt(i32, rest, 10) catch return false;
     self.context.document_handler.setOddShiftX(n);
     self.context.resetCurrentPage();
+    return true;
+}
+
+fn handleOverride(self: *Self, cmd: []const u8) bool {
+    if (!std.mem.eql(u8, cmd, "override")) return false;
+    self.context.overrideCropped();
     return true;
 }
 

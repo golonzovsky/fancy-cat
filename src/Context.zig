@@ -1263,7 +1263,7 @@ pub const Context = struct {
                 return;
             };
         };
-        self.document_handler.exportCropped(out) catch |err| {
+        self.document_handler.exportCropped(out, false) catch |err| {
             self.progress_text = switch (err) {
                 error.NothingToApply => " export: no crop or oddx set ",
                 else => " export failed ",
@@ -1272,6 +1272,43 @@ pub const Context = struct {
         };
         const msg = std.fmt.bufPrint(&self.progress_buf, " exported {s} ", .{out}) catch " exported ";
         self.progress_text = msg;
+    }
+
+    // `:override` — bake the crop + oddx into the file itself (same /ID, so
+    // saved state stays attached), then reset that state: the next open lands
+    // on the same page but relies on the document's own boxes.
+    pub fn overrideCropped(self: *Self) void {
+        var tmp_buf: [1024]u8 = undefined;
+        const tmp = std.fmt.bufPrintZ(&tmp_buf, "{s}.override.tmp", .{self.doc_abs_path}) catch {
+            self.progress_text = " override: path too long ";
+            return;
+        };
+        const page = self.document_handler.getCurrentPageNumber();
+        // The save reads the source lazily, so it must go to a temp file and
+        // rename over the original rather than write in place.
+        self.document_handler.exportCropped(tmp, true) catch |err| {
+            self.progress_text = switch (err) {
+                error.NothingToApply => " override: no crop or oddx set ",
+                else => " override failed ",
+            };
+            return;
+        };
+        std.Io.Dir.renameAbsolute(tmp, self.doc_abs_path, self.io) catch {
+            self.progress_text = " override: rename failed ";
+            return;
+        };
+        // The file carries the geometry now; drop it from the session state.
+        if (self.document_handler.getCropToContent()) self.document_handler.toggleCropToContent();
+        self.document_handler.setMarginCrop(0, 0, 0, 0);
+        self.document_handler.setOddShiftX(0);
+        self.document_handler.reloadDocument() catch {};
+        self.freeOutline();
+        self.outline = self.document_handler.loadOutline(self.allocator) catch &.{};
+        self.clearCache();
+        self.document_handler.setCurrentPage(page);
+        self.resetCurrentPage();
+        self.saveState();
+        self.progress_text = " crop baked into file; saved state reset ";
     }
 
     pub fn openCurrentPageInEditor(self: *Self) !void {

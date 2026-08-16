@@ -75,6 +75,9 @@ int fz_extract_pages_z(
 // Writes a copy of the PDF at src_path to dst_path with each page's
 // MediaBox/CropBox set to the crop window: margins inset in PDF points, and
 // the window shifted by -odd_shift_x on odd (0-based) pages, matching the
-// viewer's aligned-space crop. Lossless (content untouched). Returns 1 on success.
+// viewer's aligned-space crop. Lossless (content untouched). keep_id=0 strips
+// the trailer /ID so the copy gets its own saved-state identity; keep_id=1
+// preserves it (for in-place override). Returns 1 on success.
 int fz_export_cropped_z(fz_context *ctx, const char *src_path, const char *dst_path,
-                        float left, float right, float top, float bottom, int odd_shift_x);
+                        float left, float right, float top, float bottom, int odd_shift_x,
+                        int keep_id);

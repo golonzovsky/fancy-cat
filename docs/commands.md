@@ -25,6 +25,9 @@ same table that dispatches these commands.)
 - `:export [path]` — write a copy of the PDF with the current crop and `oddx`
   baked into the page boxes (lossless; for printing without margins). Default
   path: `<book>-cropped.pdf` next to the original
+- `:override` — same, but rewrites the current file in place (keeping its
+  saved-state identity) and resets the saved crop/`oddx`: the next open lands
+  on the same page and relies on the document's own boxes
 - `:help` — help popup
 - `:q` — quit
 

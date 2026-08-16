@@ -624,13 +624,13 @@ pub fn cropInfo(self: *Self) ?CropInfo {
 
 // Writes a copy of the document with the effective crop + oddx baked into the
 // page boxes (lossless; for printing without margins).
-pub fn exportCropped(self: *Self, out_path: [:0]const u8) !void {
+pub fn exportCropped(self: *Self, out_path: [:0]const u8, keep_id: bool) !void {
     const ci = self.cropInfo() orelse CropInfo{ .left = 0, .right = 0, .top = 0, .bottom = 0, .auto = false };
     if (ci.left == 0 and ci.right == 0 and ci.top == 0 and ci.bottom == 0 and self.odd_shift_x == 0)
         return error.NothingToApply;
     self.render_mutex.lockUncancelable(self.io);
     defer self.render_mutex.unlock(self.io);
-    if (c.fz_export_cropped_z(self.ctx, self.path.ptr, out_path.ptr, ci.left, ci.right, ci.top, ci.bottom, self.odd_shift_x) == 0)
+    if (c.fz_export_cropped_z(self.ctx, self.path.ptr, out_path.ptr, ci.left, ci.right, ci.top, ci.bottom, self.odd_shift_x, @intFromBool(keep_id)) == 0)
         return error.ExportFailed;
 }
 

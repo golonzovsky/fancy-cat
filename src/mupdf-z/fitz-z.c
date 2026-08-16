@@ -553,7 +553,8 @@ int fz_pdf_id_hex_z(fz_context *ctx, fz_document *doc, char *out, int out_size) 
 }
 
 int fz_export_cropped_z(fz_context *ctx, const char *src_path, const char *dst_path,
-                        float left, float right, float top, float bottom, int odd_shift_x) {
+                        float left, float right, float top, float bottom, int odd_shift_x,
+                        int keep_id) {
   pdf_document *pdf = NULL;
   int ok = 0;
   fz_var(pdf);
@@ -579,11 +580,12 @@ int fz_export_cropped_z(fz_context *ctx, const char *src_path, const char *dst_p
       pdf_dict_put_rect(ctx, pageobj, PDF_NAME(MediaBox), box);
       pdf_dict_put_rect(ctx, pageobj, PDF_NAME(CropBox), box);
     }
-    // The copy must not share the source's /ID: the viewer keys saved state
+    // Unless the caller wants the same identity (in-place :override), the
+    // copy must not share the source's /ID: the viewer keys saved state
     // (position, crop, oddx) on it, and inherited state would re-apply the
     // crop on top of the baked-in one. Without an ID the viewer falls back
     // to a content hash, which is unique to the exported file.
-    pdf_dict_del(ctx, pdf_trailer(ctx, pdf), PDF_NAME(ID));
+    if (!keep_id) pdf_dict_del(ctx, pdf_trailer(ctx, pdf), PDF_NAME(ID));
     pdf_write_options opts = pdf_default_write_options;
     pdf_save_document(ctx, pdf, dst_path, &opts);
     ok = 1;
